@@ -1,6 +1,6 @@
 # Clinic Voice Agent
 
-Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.md`. Current week's plan: `docs/week1.md`. Current status and next task: `docs/PROGRESS.md` (update it at the end of every work session). Every real problem gets an entry in `docs/LEARNING.md`: what happened, mechanism, options, choice, verification.
+Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.md`. Current week's plan: `docs/week1.md`. Current status and next task: `docs/PROGRESS.md` (update it at the end of every work session). Every real problem gets an entry in `docs/LEARNING.md`: what happened, mechanism, options, choice, verification, and how production systems handle it ("In industry").
 
 ## Stack
 

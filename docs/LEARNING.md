@@ -2,7 +2,8 @@
 
 Every real problem we hit, written so it can be understood and explained in an interview. Each
 entry covers: **what happened** (with evidence), **how it works underneath**, **the options**,
-**what we chose and why**, and **how we verified it**. Newest at the bottom.
+**what we chose and why**, **how we verified it**, and **in industry** (how production
+systems handle the same thing). Newest at the bottom.
 
 This is a teaching log. `DECISIONS.md` is different: those answers are written in your own words.
 
@@ -37,6 +38,29 @@ model generation accepts. A live text call returned a correct Hinglish reply.
 **Lesson.** Check what a setting *actually does* in the installed library version. Silent
 no-ops are worse than errors.
 
+**In industry.** Production voice agents keep reasoning **off the hot path**. The live turn
+uses a fast, non-reasoning (or minimal-thinking) model. Speed also comes from
+**architecture**, not just the model:
+- **Stream everything:** the first sentence goes to TTS while the LLM is still writing.
+- **Preemptive generation:** start the LLM on the final transcript before the turn detector
+  confirms the turn is over, and throw the result away if the caller keeps talking. LiveKit
+  has this built in, and our logs show `using preemptive generation`.
+- **Short prompts, few tools, prompt caching:** an unchanged prompt prefix is cached by the
+  provider, which cuts time to first token.
+- **Co-located regions and warm connections:** the worker and model endpoint sit close
+  together, and connections are reused instead of re-opened per turn.
+- **Filler while slow work runs:** "one second, let me check" covers a slow tool or a
+  reasoning step.
+- **Routing or cascades:** a small model handles simple turns, and a stronger model is used
+  only when needed (experiment E2).
+- **Speech-to-speech models** (OpenAI Realtime, Gemini Live) merge STT, LLM and TTS into one
+  model. That gives the lowest latency, but less control over each stage and over tool
+  guardrails.
+
+The target behind all this: in human conversation the typical gap between turns is about
+**200 ms** across languages (Stivers et al., PNAS 2009). Voice agents usually aim for
+voice-to-voice under about 1 s, and teams track p95, not averages.
+
 ---
 
 ## 2. The turn detector behaves differently in `dev` and `start`
@@ -68,6 +92,15 @@ cutting in.
 
 **Lesson.** Pin anything that affects what you are measuring. "Default" can mean different
 things in different environments.
+
+**In industry.** "Dev/prod parity" (from the Twelve-Factor App) is standard:
+- **Pin library versions** with lockfiles.
+- **Pin model versions** with dated or versioned model IDs, never "latest".
+- **Record the exact config with every metric** (model, provider, prompt version), so a
+  regression can be traced to a change (design §16.5–16.6). Our turn rows store `providers`
+  and `language` for this reason.
+- **Benchmark the setup you ship.** A number measured on a different configuration is not
+  evidence.
 
 ---
 
@@ -101,6 +134,20 @@ the caller's name), with transcript delay 0.4–0.5 s instead of 6.2 s.
 problems (Hinglish accuracy), so one doesn't hide the other. Then measure model quality with a
 fixed test set instead of judging by feel.
 
+**In industry.**
+- **Evaluate on your own audio.** Vendors' published accuracy numbers are on their own test
+  sets. Teams record domain audio (accents, mics, background noise, the real phone line) and
+  measure **word error rate (WER) per category**: names, numbers, dates, noise.
+- **Normalise before scoring code-mixed speech.** The same word can come back in Devanagari
+  or Roman script ("खुलेगा" vs "khulega"). Transliterate both sides to one script before
+  computing WER, or the score counts script differences as errors.
+- **Domain vocabulary:** keyterm or boosting lists for names and product terms.
+- **Regional specialist providers** for Indian languages, alongside global ones.
+- **More than one STT provider**, with routing per language and fallback on outage
+  (design §5.7).
+- **Low-confidence handling:** ask again or read back instead of acting on a doubtful
+  transcript (design §5.3).
+
 ---
 
 ## 4. The voice sounded rushed and flat
@@ -131,6 +178,19 @@ streaming path in week 4.
 
 **Lesson.** On a voice agent the prompt shapes *how it sounds*, not just what it says. Build
 cheap offline loops (sample renders) before expensive live ones (calls).
+
+**In industry.**
+- **Choose voices with listening tests.** Teams often use **MOS** (mean opinion score:
+  listeners rate clips 1–5) or side-by-side A/B preference tests, not one person's ear.
+- **Write the LLM's output for speech:** no markdown or lists, numbers and times as words,
+  short sentences. Voice platform docs recommend this, and the text normaliser turns
+  "10:30" or "₹500" into speakable words.
+- **Fine-tune pacing with markup:** SSML or provider tags for pauses, speed and emphasis
+  where the text alone isn't enough.
+- **Brand voices:** businesses often clone or design a custom voice so it matches their
+  callers' accent and expectations.
+- **Track time to first audio next to quality.** The fastest voice is useless if callers
+  find it robotic, and the nicest voice is useless if it adds a second of silence.
 
 ---
 
@@ -173,6 +233,19 @@ Removing the "can't help yet" lines as tools arrive is in `PROGRESS.md`.
 comes from tools and code, not from the prompt. Every bug found becomes an eval case
 (design §16.2).
 
+**In industry.**
+- **Ground answers in data:** facts come from tools or retrieval over the business's own
+  data, and the prompt says to answer only from tool results.
+- **Actions only through tools,** with permission checks in code. This is the
+  **"excessive agency"** risk in the OWASP Top 10 for LLM applications: the model must not
+  be able to do more than code allows.
+- **Output guardrails:** a rule or classifier checks replies before they are spoken
+  (medical advice, personal data, unsupported claims).
+- **Human handoff** as the honest fallback, plus regression evals so a fixed hallucination
+  can't quietly come back.
+- **Show, don't trust:** after a write, read the booking back and confirm from stored data,
+  never from what the model intended (design §9).
+
 ---
 
 ## 6. The worker died while the laptop slept
@@ -212,6 +285,18 @@ real.
 
 **Verified.** `pmset -g assertions` shows the sleep block held by our process, and the worker
 re-registered.
+
+**In industry.**
+- **Run long-lived workers under a supervisor:** systemd, Kubernetes, or a managed platform
+  such as LiveKit Cloud. Health checks and automatic restarts are standard.
+- **Graceful drain on deploys:** stop taking new calls and let active calls finish before
+  the process exits.
+- **Reconnect with exponential backoff plus jitter** (small random delays), so thousands of
+  workers don't reconnect at the same moment after an outage. The AWS Architecture Blog's
+  "Exponential Backoff and Jitter" is the classic reference.
+- **Exit codes that mean something:** non-zero on failure, so supervisors restart correctly.
+- **Separate the control plane** (registration and job dispatch) **from the media plane**
+  (the call audio). That's why a dropped worker connection stops *new* calls first.
 
 **Lesson / interview angle.** "Is the worker alive" and "is the call alive" are separate
 connections. This is the failure-lab case "agent worker crash mid-call" (design §10.2). Had a
