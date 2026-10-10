@@ -137,3 +137,36 @@ def test_token_counts_skip_cancelled_requests():
     r = b.on_agent_message(agent())
     assert (r.llm_prompt_tokens, r.llm_cached_tokens, r.llm_reasoning_tokens) == (300, 256, 12)
     assert b.on_agent_message(agent()).llm_prompt_tokens is None  # reset per reply
+
+
+def test_barge_in_without_adaptive_detector_uses_vad_states():
+    # LiveKit falls back to VAD-based interruption when the cloud detector times out;
+    # no overlapping_speech event is emitted then.
+    from livekit.agents.voice.events import UserStateChangedEvent
+
+    b = builder()
+    b.on_agent_state(
+        AgentStateChangedEvent(old_state="thinking", new_state="speaking", created_at=30.0)
+    )
+    b.on_user_state(
+        UserStateChangedEvent(old_state="listening", new_state="speaking", created_at=31.0)
+    )
+    b.on_agent_state(
+        AgentStateChangedEvent(old_state="speaking", new_state="listening", created_at=31.12)
+    )
+    r = b.on_agent_message(agent(interrupted=True))
+    assert r.interrupt_stop_ms == 120.0
+    assert r.interrupt_detect_ms is None  # only the adaptive detector reports this
+
+
+def test_caller_speaking_while_agent_silent_is_not_barge_in():
+    from livekit.agents.voice.events import UserStateChangedEvent
+
+    b = builder()
+    b.on_user_state(
+        UserStateChangedEvent(old_state="listening", new_state="speaking", created_at=5.0)
+    )
+    b.on_agent_state(
+        AgentStateChangedEvent(old_state="speaking", new_state="listening", created_at=9.0)
+    )
+    assert b.on_agent_message(agent(interrupted=True)).interrupt_stop_ms is None

@@ -302,3 +302,92 @@ re-registered.
 connections. This is the failure-lab case "agent worker crash mid-call" (design §10.2). Had a
 call been live, the caller would have heard silence. The target behaviour is to end the call
 cleanly, record an event and start a callback workflow.
+
+---
+
+## 7. The database URL broke on an `@` in the password, and the project was in Sydney
+
+**What happened.** The migration failed with a DNS error, `nodename nor servname provided`.
+The `DATABASE_URL` contained two `@` characters, because the password had one. Separately, the
+first Supabase project was created in `ap-southeast-2` (Sydney) instead of Mumbai.
+
+**How it works.** A database URL is `postgresql://USER:PASSWORD@HOST:PORT/DB`. The `@`
+separates the credentials from the host, so a raw `@` inside the password is ambiguous. Python's
+`urlsplit` splits on the *last* `@` (correct here), but the Postgres driver split on the *first*
+one. It then tried to resolve part of the password as a hostname, and DNS failed. The error
+pointed at the network when the real cause was the string format.
+
+**Region.** I measured a single TCP connect from the laptop: about 0.35–0.58 s to Sydney
+against about 0.06–0.23 s to Mumbai. A real query through the Mumbai pooler takes about
+105–130 ms per round trip. Telemetry writes are in the background, so they don't care, but day 4
+tools read the database *during* the call, and each query adds its round trip to the caller's
+silence.
+
+**Options.** URL-encode the password (`@` becomes `%40`). Use a letters-and-numbers-only
+password. Or parse the URL robustly in code. Region: recreate the project in Mumbai (free while
+there is no data), or keep Sydney and accept the latency on every tool call.
+
+**Chosen.** `agent/db.py::connect_kwargs` splits on the *last* `@`, decodes percent-encoding,
+and passes host, user and password to the driver separately, so both forms work. The project
+was recreated in Mumbai.
+
+**Verified.** Unit tests cover a raw `@` and an encoded password. The migration applied (26
+columns), 4 real rows round-tripped through the worker's insert code, and the report read them
+back from the database.
+
+**In industry.**
+- **Connection settings as separate fields** (host, user, password from a secret manager)
+  rather than one hand-edited URL string. This removes the escaping problem.
+- **Secrets never pasted into chat or code;** they're injected at runtime.
+- **Data next to compute:** the database, worker and callers in the same region, with read
+  replicas or caches when data has to live elsewhere.
+- **Connection pooling** (PgBouncer or Supavisor) between apps and Postgres, because each
+  Postgres connection is a full server process.
+- **Measure a query's round trip early,** before designing anything that runs queries during
+  a live turn.
+
+---
+
+## 8. The cloud interruption detector timed out, and barge-in timing went blank
+
+**What happened.** In the day 3 test call the barge-in fields came out empty, although the
+caller did interrupt. The worker log showed:
+`adaptive interruption disabled due to unrecoverable error, falling back to VAD-based
+interruption {"error": "interruption inference timed out"}`.
+
+**How it works.** LiveKit 1.8 has two ways to decide "the caller is interrupting":
+- **Adaptive (default):** caller audio that overlaps the agent's speech is sent to a model on
+  LiveKit's cloud gateway, which tells real interruptions apart from backchannels ("haan",
+  "okay", a cough). It emits `overlapping_speech` events.
+- **VAD-based (fallback):** any detected speech over the agent counts as an interruption.
+  Simpler, with more false interruptions from noise or backchannels.
+
+The cloud model timed out, so LiveKit **degraded gracefully** to VAD. The agent still stopped
+talking. My telemetry only listened for `overlapping_speech`, which VAD mode doesn't send, so
+it measured nothing. That was a measurement bug that depended on a cloud feature being
+healthy.
+
+**Options.**
+1. Measure only in adaptive mode (fragile: the number disappears exactly when things go wrong).
+2. Measure from signals both modes share: the caller entering *speaking* while the agent is
+   speaking, until the agent leaves *speaking*.
+3. Turn off the cloud detector (removes a network dependency, but loses backchannel filtering,
+   which the design wants in week 3).
+
+**Chosen.** Option 2. Onset comes from the adaptive detector's precise speech start when
+available, and otherwise from `user_state_changed`. The end is `agent_state_changed`. The VAD
+onset is slightly late, because VAD needs a short stretch of speech before it fires, so VAD-mode
+stop times read a little *better* than reality. Note that when comparing runs.
+
+**Verified.** Unit tests cover both modes, and a test confirms that a caller speaking while the
+agent is silent is not counted as barge-in. Confirm on the next live call.
+
+**In industry.**
+- **Every cloud dependency on the hot path needs a timeout and a fallback.** That's exactly
+  what LiveKit did here (design §5.7). Teams count and alert on how often fallbacks fire,
+  because a silent downgrade still changes quality: here, more false interruptions.
+- **Telemetry must not depend on the happy path.** Measure from signals that exist in every
+  mode, and record *which* mode was active, so numbers from degraded periods aren't mixed with
+  healthy ones.
+- **Backchannel filtering** (ignoring "uh-huh" and "haan") is now a standard feature of
+  production voice stacks. Its false-interruption rate is a headline metric (design §15).

@@ -17,6 +17,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from agent.db import connect_kwargs
+
 JSONL_PATH = Path("logs/turns.jsonl")
 
 # (column, label) in pipeline order. Definitions: design doc §6.
@@ -66,7 +68,7 @@ def load_jsonl() -> list[dict]:
 async def load_db(dsn: str) -> list[dict]:
     import asyncpg
 
-    conn = await asyncpg.connect(dsn, statement_cache_size=0)
+    conn = await asyncpg.connect(**connect_kwargs(dsn))
     try:
         rows = await conn.fetch("select * from turns")
     finally:

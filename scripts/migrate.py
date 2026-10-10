@@ -12,12 +12,14 @@ from pathlib import Path
 import asyncpg
 from dotenv import load_dotenv
 
+from agent.db import connect_kwargs
+
 MIGRATIONS = Path("db/migrations")
 
 
 async def main() -> None:
     load_dotenv(".env")
-    conn = await asyncpg.connect(os.environ["DATABASE_URL"], statement_cache_size=0)
+    conn = await asyncpg.connect(**connect_kwargs(os.environ["DATABASE_URL"]))
     try:
         await conn.execute(
             "create table if not exists schema_migrations"

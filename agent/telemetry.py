@@ -5,7 +5,10 @@ Sources (LiveKit 1.8):
   and stopped speaking, transcription delay and end-of-turn delay. Agent messages carry LLM time
   to first token, time to first sentence, TTS time to first audio and e2e (voice-to-voice)
   latency.
-- `overlapping_speech` + `agent_state_changed` events for barge-in stop time.
+- Barge-in stop time: onset from the adaptive interruption detector's `overlapping_speech`
+  event when it runs, else from `user_state_changed` -> speaking while the agent is speaking
+  (VAD-based interruption, which LiveKit falls back to if the cloud detector fails); the end
+  is `agent_state_changed` away from speaking.
 - `function_tools_executed` for tool names and durations.
 - `metrics_collected` LLMMetrics for token counts, to check thinking and prompt caching.
 
@@ -30,8 +33,11 @@ from livekit.agents.voice.events import (
     ConversationItemAddedEvent,
     FunctionToolsExecutedEvent,
     MetricsCollectedEvent,
+    UserStateChangedEvent,
 )
 from pydantic import BaseModel
+
+from agent.db import connect_kwargs
 
 logger = logging.getLogger("telemetry")
 
@@ -117,7 +123,9 @@ class TurnBuilder:
         self._turn_index = 0
         self._user_msg: llm.ChatMessage | None = None
         self._tools: list[ToolCall] = []
-        self._interrupt_onset: float | None = None
+        self._agent_state = "initializing"
+        self._interrupt_onset: float | None = None  # adaptive detector: true speech onset
+        self._vad_onset: float | None = None  # VAD: caller started speaking over the agent
         self._interrupt_detect: float | None = None
         self._agent_stopped_at: float | None = None
         self._llm: list[metrics.LLMMetrics] = []
@@ -138,8 +146,13 @@ class TurnBuilder:
             self._interrupt_onset = ev.overlap_started_at or (ev.detected_at - ev.detection_delay)
             self._interrupt_detect = ev.detection_delay
 
+    def on_user_state(self, ev: UserStateChangedEvent) -> None:
+        if ev.new_state == "speaking" and self._agent_state == "speaking" and not self._vad_onset:
+            self._vad_onset = ev.created_at
+
     def on_agent_state(self, ev: AgentStateChangedEvent) -> None:
-        if ev.old_state == "speaking" and self._interrupt_onset is not None:
+        self._agent_state = ev.new_state
+        if ev.old_state == "speaking" and (self._interrupt_onset or self._vad_onset):
             self._agent_stopped_at = ev.created_at
 
     def on_tools(self, ev: FunctionToolsExecutedEvent) -> None:
@@ -159,8 +172,9 @@ class TurnBuilder:
         a = msg.metrics
         stopped = u.get("stopped_speaking_at")
         stop_ms = None
-        if msg.interrupted and self._interrupt_onset is not None and self._agent_stopped_at:
-            stop_ms = _ms(self._agent_stopped_at - self._interrupt_onset)
+        onset = self._interrupt_onset or self._vad_onset
+        if msg.interrupted and onset is not None and self._agent_stopped_at:
+            stop_ms = _ms(self._agent_stopped_at - onset)
 
         record = TurnRecord(
             **self._base,
@@ -188,7 +202,8 @@ class TurnBuilder:
         self._user_msg = None
         self._tools = []
         self._llm = []
-        self._interrupt_onset = self._interrupt_detect = self._agent_stopped_at = None
+        self._interrupt_onset = self._vad_onset = self._interrupt_detect = None
+        self._agent_stopped_at = None
         return record
 
 
@@ -220,10 +235,8 @@ class TurnSink:
         import asyncpg
 
         if self._pool is None:
-            # statement_cache_size=0: Supabase's transaction pooler doesn't support
-            # prepared statements.
             self._pool = await asyncpg.create_pool(
-                self._dsn, min_size=1, max_size=2, statement_cache_size=0
+                min_size=1, max_size=2, **connect_kwargs(self._dsn)
             )
         await self._pool.execute(
             """insert into turns (call_id, turn_index, channel, language, providers, cold_call,
@@ -298,6 +311,7 @@ def attach(
 
     session.on("overlapping_speech", builder.on_overlap)
     session.on("agent_state_changed", builder.on_agent_state)
+    session.on("user_state_changed", builder.on_user_state)
     session.on("function_tools_executed", builder.on_tools)
     session.on("metrics_collected", builder.on_metrics)
     return sink
