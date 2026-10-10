@@ -46,10 +46,15 @@ Built:
 - `docs/TEST_CALLS.md` (10 scripted calls) and the `docs/LATENCY_LOG.md` template.
 - 8 unit tests (`uv run pytest`).
 
-Not done yet:
-- A live call to confirm rows are written.
-- Create the Supabase project, set `DATABASE_URL` and run `scripts.migrate`.
-- Run the 10 test calls and record the baseline row. **Do not optimize anything before the baseline.**
+Done (later on day 3):
+- Supabase project in Mumbai, `turns` table migrated, rows written by the worker.
+- **Baseline recorded** in `docs/LATENCY_LOG.md`: V2V p50 2,251 / p95 2,747 ms over 10 calls and 22 turns.
+
+Optimization candidates from the baseline (not applied; the design puts the optimization pass in week 3):
+1. **Turn detector false "unfinished"** (EoT p95 2.5 s, about 6 of 22 turns): E7 (cloud `v1` vs a lower `max_endpointing_delay` vs threshold).
+2. **LLM TTFT** about 1.3 s p50, the biggest p50 stage: E1 (model and region).
+3. **Backchannel "okay" stopped the agent** (call 10): the week 3 backchannel filter.
+4. The **cloud interruption detector timed out** twice today: count fallbacks (week 7 observability).
 
 ## Next task
 

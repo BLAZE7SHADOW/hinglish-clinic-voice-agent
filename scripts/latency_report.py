@@ -3,8 +3,10 @@
     uv run python -m scripts.latency_report                       # DB if DATABASE_URL, else JSONL
     uv run python -m scripts.latency_report --jsonl --since 2026-10-10 --language en
 
-Cold calls (the first call a worker process serves) are excluded unless --include-cold:
-they include connection setup, which callers on a warm worker never pay.
+Excluded unless asked for:
+- cold calls (--include-cold): the first call after the worker sat idle (cold start);
+- greeting turns (--include-greeting): no caller is waiting on them, and each call's first LLM
+  and TTS requests also pay connection setup.
 """
 
 import argparse
@@ -81,6 +83,12 @@ async def load_db(dsn: str) -> list[dict]:
 def keep(row: dict, args: argparse.Namespace) -> bool:
     if not args.include_cold and row.get("cold_call"):
         return False
+    if (
+        not args.include_greeting
+        and row.get("turn_index") == 0
+        and not row.get("user_speech_end_at")
+    ):
+        return False
     if args.channel and row.get("channel") != args.channel:
         return False
     if args.language and row.get("language") != args.language:
@@ -113,6 +121,7 @@ def main() -> None:
     ap.add_argument("--language", help="en | hinglish")
     ap.add_argument("--since", type=date.fromisoformat, help="YYYY-MM-DD (UTC)")
     ap.add_argument("--include-cold", action="store_true")
+    ap.add_argument("--include-greeting", action="store_true")
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL")

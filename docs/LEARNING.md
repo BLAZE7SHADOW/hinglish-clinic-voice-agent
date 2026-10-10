@@ -391,3 +391,88 @@ agent is silent is not counted as barge-in. Confirm on the next live call.
   healthy ones.
 - **Backchannel filtering** (ignoring "uh-huh" and "haan") is now a standard feature of
   production voice stacks. Its false-interruption rate is a headline metric (design §15).
+
+---
+
+## 9. Every call was marked "cold", and the baseline report came back empty
+
+**What happened.** After 11 baseline calls the report showed 0 turns. All 40 rows had
+`cold_call = true`, so the report's cold filter excluded everything.
+
+**How it works.** I defined "cold" as "the first call this process serves", using a counter in
+the Python module. But a LiveKit worker runs **every call in its own process**. The main worker
+process keeps a small pool of pre-started processes and hands each call a fresh one, so a
+crashing call can't take down others. In every process the counter was 0, so every call looked
+like the first. The unit tests passed because they built `TurnBuilder` directly and never ran
+the real process model.
+
+**Options.** Count calls in the main worker process (not reachable from the call's process).
+Mark the first call after worker *start*. Or mark the first call after the worker sat *idle*,
+which is what week 1 means by cold start.
+
+**Chosen.** Cold = no call ended in the last 10 minutes, tracked with a marker file's
+modification time (`logs/.last_call_end`) that lives outside any one process. Separately,
+greeting turns are excluded from the report by default: no caller is waiting on them, and each
+call's first LLM and TTS request also pays connection setup (greeting TTFT was about
+1.3–1.6 s in every call). Today's rows were corrected: the warm-up and the earlier test call
+stay cold, and the 11 later calls are warm.
+
+**Verified.** A unit test covers the idle rule (no marker, a fresh marker, a stale marker), and
+the report now shows 10 calls and 22 turns.
+
+**In industry.**
+- **Process isolation per session** is the normal design for real-time agents (LiveKit,
+  serverless functions, many game servers): one crash can't take down other calls, and memory
+  is reclaimed. The cost: no in-memory state is shared between calls. Anything cross-call
+  (counters, caches, rate limits) lives outside the process, in Redis, a database, or the
+  supervisor.
+- **Test telemetry on the real runtime,** not just units. Many metric bugs only appear under
+  the real process and concurrency model.
+- **Separate "first request on a new connection" from steady state.** Teams warm connections
+  (prewarm, keep-alive, connection pools) and report cold-start latency separately.
+
+---
+
+## 10. The turn detector made the agent wait 2.5 s after complete sentences
+
+**What happened.** Baseline end-of-turn: p50 578 ms but **p95 2,501 ms**. In 6 of about 22
+caller turns the agent waited the full 2.5 s after a *complete* sentence: "Good morning."
+(score 0.26), "I want to see doctor Sharma tomorrow." (0.34), "Can you tell me about the
+clinic?" (0.31). The one deliberate mid-sentence pause ("I need an appointment for…", 0.09)
+was correctly held, so call 6 worked.
+
+**How it works.** After VAD hears silence, the turn detector (`v1-mini`, text-only) reads the
+transcript plus recent context and predicts the probability the caller has finished. If that
+probability is below a per-language threshold (0.36 for English), LiveKit waits up to
+`max_endpointing_delay` (2.5 s) for more speech. If it's above, it waits only
+`min_endpointing_delay` (0.3 s). So every false "unfinished" adds about 2.2 s of silence.
+Possible reasons it misjudged:
+- A small text-only model can't hear the falling intonation that marks the end of a sentence.
+- Indian-English phrasing differs from its training data.
+- It sometimes scored only the last STT fragment ("…just the address.", "…Wait. Make it six.").
+
+**The tradeoff (design §5.2).** Cut in too early and you interrupt callers who pause
+("mera appointment kal… nahi, parson"). Wait too long and every reply feels slow. Here the
+detector was cautious on almost a third of turns.
+
+**Options (experiment E7, not applied yet: baseline first).**
+1. Cloud `v1` turn detector: audio-aware, so it hears intonation. It adds a network hop and
+   is another cloud dependency (see entry 8).
+2. Lower `max_endpointing_delay` (for example 1.2–1.5 s): caps the damage of a wrong
+   "unfinished", at the risk of cutting into real pauses.
+3. Tune the per-language threshold: shifts the balance; needs the pause test set to check
+   for regressions.
+4. Use STT end-of-speech signals together with the detector.
+
+**Measure each option on two things:** false cut-offs on the pause set (call 6, and the
+Hinglish pause set in week 4) *and* the end-of-turn p95. Improving one by breaking the other
+doesn't count.
+
+**In industry.**
+- **Semantic and audio turn detection** has replaced fixed silence timeouts in production
+  stacks: LiveKit's turn detector, and Pipecat's open, audio-native Smart Turn model.
+  LiveKit's own posts report fewer false interruptions from audio-aware models.
+- **End-of-turn decisions are logged with their inputs** (LiveKit added built-in turn-decision
+  observability), so tuning comes from data like the table above, not guesswork.
+- **Language-specific tuning:** thresholds and delays differ per language, and LiveKit ships
+  different thresholds for English and Hindi. Teams re-tune on their own callers.

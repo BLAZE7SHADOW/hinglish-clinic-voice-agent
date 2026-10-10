@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,18 @@ logger = logging.getLogger("telemetry")
 JSONL_PATH = Path("logs/turns.jsonl")
 DB_WRITE_TIMEOUT_S = 5.0
 
-_calls_in_process = 0  # the first call a process serves pays connection setup (cold start)
+# A call is "cold" if no call ended in the last IDLE_COLD_S seconds (week 1: skip the first call
+# after the agent has been idle). LiveKit runs each call in a fresh process, so this has to be
+# tracked outside the process: the marker file's mtime is when the last call ended.
+LAST_CALL_MARKER = Path("logs/.last_call_end")
+IDLE_COLD_S = 600
+
+
+def _is_cold_call() -> bool:
+    try:
+        return time.time() - LAST_CALL_MARKER.stat().st_mtime > IDLE_COLD_S
+    except FileNotFoundError:
+        return True
 
 
 class ToolCall(BaseModel):
@@ -274,6 +286,7 @@ class TurnSink:
         )
 
     async def aclose(self) -> None:
+        LAST_CALL_MARKER.touch()
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._pool is not None:
@@ -289,15 +302,13 @@ def attach(
     session: AgentSession, *, call_id: str, channel: str, language: str, providers: dict[str, str]
 ) -> TurnSink:
     """Subscribe to session events and record one row per agent reply."""
-    global _calls_in_process
     builder = TurnBuilder(
         call_id=call_id,
         channel=channel,
         language=language,
         providers=providers,
-        cold_call=_calls_in_process == 0,
+        cold_call=_is_cold_call(),
     )
-    _calls_in_process += 1
     sink = TurnSink()
 
     @session.on("conversation_item_added")

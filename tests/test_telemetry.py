@@ -170,3 +170,19 @@ def test_caller_speaking_while_agent_silent_is_not_barge_in():
         AgentStateChangedEvent(old_state="speaking", new_state="listening", created_at=9.0)
     )
     assert b.on_agent_message(agent(interrupted=True)).interrupt_stop_ms is None
+
+
+def test_cold_call_means_worker_was_idle(tmp_path, monkeypatch):
+    import os
+    import time
+
+    from agent import telemetry
+
+    marker = tmp_path / ".last_call_end"
+    monkeypatch.setattr(telemetry, "LAST_CALL_MARKER", marker)
+    assert telemetry._is_cold_call()  # no call has ever ended
+    marker.touch()
+    assert not telemetry._is_cold_call()  # a call just ended
+    old = time.time() - telemetry.IDLE_COLD_S - 1
+    os.utime(marker, (old, old))
+    assert telemetry._is_cold_call()  # idle longer than the threshold
