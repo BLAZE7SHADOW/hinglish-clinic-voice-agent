@@ -16,7 +16,7 @@ from livekit.plugins import cartesia, deepgram, google, silero
 
 from agent import prompts
 
-load_dotenv(".env.local")
+load_dotenv(".env")
 
 
 class Receptionist(Agent):
@@ -45,13 +45,23 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_detection=inference.TurnDetector(version="v1-mini"),
         # "multi" lets nova-3 follow Hindi/English code-switching within a turn.
         stt=deepgram.STT(model="nova-3", language="multi"),
-        # Thinking off: it adds directly to time to first token.
-        llm=google.LLM(model="gemini-2.5-flash", thinking_config={"thinking_budget": 0}),
+        llm=_llm(),
         tts=cartesia.TTS(model="sonic-3", language="hi", **_cartesia_voice()),
     )
 
     await session.start(room=ctx.room, agent=Receptionist())
     session.generate_reply(instructions=prompts.GREETING)
+
+
+def _llm() -> google.LLM:
+    provider = os.environ.get("AI_PROVIDER", "gemini")
+    if provider != "gemini":
+        raise ValueError(f"AI_PROVIDER={provider!r} is not wired up yet; only 'gemini' is")
+    model = os.environ.get("AI_MODEL", "gemini-3.6-flash")
+    # Thinking as low as the model allows: it adds directly to time to first token.
+    # Gemini 3 takes a level, 2.5 and earlier take a token budget.
+    thinking = {"thinking_level": "minimal"} if "gemini-3" in model else {"thinking_budget": 0}
+    return google.LLM(model=model, api_key=os.environ["GEMINI_API_KEY"], thinking_config=thinking)
 
 
 def _cartesia_voice() -> dict[str, str]:

@@ -7,7 +7,7 @@ Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.
 - Python 3.12, `uv` (commit `uv.lock`)
 - LiveKit Agents 1.8 on LiveKit Cloud (Build plan), using `AgentServer` + `@server.rtc_session`
 - Silero VAD + `inference.TurnDetector(version="v1-mini")` (pinned, runs locally)
-- STT Deepgram `nova-3` (`language="multi"`), LLM Gemini `gemini-2.5-flash` (thinking off), TTS Cartesia `sonic-3` (`hi`)
+- STT Deepgram `nova-3` (`language="multi"`), LLM Gemini via `AI_PROVIDER`/`AI_MODEL` in `.env` (default `gemini-3.6-flash`, thinking minimal), TTS Cartesia `sonic-3` (`hi`)
 - Supabase Postgres via `asyncpg` (no ORM), `pydantic` for tool inputs, call state and turn records, `pytest` + `pytest-asyncio`, `ruff`
 - Later: Temporal (week 5), Next.js staff view on Vercel (week 7), OpenTelemetry (week 7)
 
@@ -29,7 +29,7 @@ Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.
 
 ```bash
 uv sync
-cp .env.example .env.local                        # fill in keys; set spending caps
+cp .env.example .env                              # fill in keys; set spending caps
 uv run python -m agent.main download-files        # VAD + turn-detector weights (once)
 uv run python -m agent.main dev                   # worker connects to LiveKit Cloud
 ```
