@@ -46,6 +46,7 @@ Then open https://agents-playground.livekit.io, sign in to the same LiveKit Clou
 ```bash
 uv run python -m scripts.latency_report         # p50/p95 per stage (DB, or logs/turns.jsonl)
 uv run python -m scripts.migrate                # apply db/migrations/*.sql (needs DATABASE_URL)
+uv run python -m db.seed                        # synthetic clinic, doctors, patients, bookings (relative to today)
 uv run python -m scripts.tts_samples           # render voice variants to samples/ to compare by ear
 uv run pytest
 uv run ruff check && uv run ruff format --check

@@ -71,7 +71,21 @@ Returns typed Choice/Score/Noul answers with confidence instead of text. Vendor 
 - **Add as a contender for post-call QA and guardrail checks** (week 7), validated against hand labels (design §16.2).
 - Before any use: check Hinglish accuracy, hosting region and latency, and redact transcripts (third-party data, design §11).
 
+## Day 4 (2026-10-10): clinic data and read-only tools
+
+Built:
+- `db/migrations/002_clinic.sql`: clinics, clinic_facts, doctors, doctor_hours (a weekly template), doctor_days_off, patients, bookings (partial unique index = the final double-booking guard, **verified**: a duplicate active booking is rejected), calls, events.
+- `db/seed.py`: 3 doctors, 20 synthetic patients, about 35% of 2 weeks' slots booked, relative to today, deterministic.
+- `agent/dates.py`: the caller's words become a date window plus assumptions (English and Hindi days, parts of the day, times including saade/sawa/paune/dedh/dhai), with 42 tests.
+- `agent/schedule.py`: free-slot computation and doctor matching (pure, tested). `agent/tools.py`: `clinic_info` and `find_slots` (typed, data-minimal, 2 s timeout plus one retry, honest error).
+- `find_slots` latency: 680–1,170 ms down to about 200 ms (3 parallel queries, cached doctors, pool opened at call start).
+
+**End-of-day check passed** (text mode, real LLM, tools and DB): "Dr. Sharma kal shaam free hain?" got "kal matlab Sunday… Dr. Sharma ki clinic nahi hoti… Monday shaam paanch baje…".
+
+Finding: a tool turn needs two LLM calls (decide, then phrase), 3.1–4.8 s in text mode. Day 5 re-measures this on voice.
+
 ## Next task
 
-1. **Voice check:** pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.
-2. **Day 2:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").
+1. **Day 4 voice check:** ask "Is Dr. Sharma free tomorrow evening?" on a call.
+2. **Day 5:** `AUDIO_PATH.md` (your own words), `state.py` (call state, not wired to writes yet), then re-run the 10 test calls and add a `LATENCY_LOG.md` row to see what the tools cost.
+3. **Day 2 leftovers:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").

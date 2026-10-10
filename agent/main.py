@@ -1,5 +1,8 @@
 """LiveKit Agents worker: the real-time voice path (VAD -> turn detector -> STT -> LLM -> TTS)."""
 
+import asyncio
+import logging
+
 from dotenv import load_dotenv
 from livekit.agents import (
     Agent,
@@ -11,14 +14,19 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import prompts, providers, telemetry
+from agent import db, prompts, providers, telemetry, tools
 
 load_dotenv(".env")
+
+logger = logging.getLogger("agent")
 
 
 class Receptionist(Agent):
     def __init__(self, language: str) -> None:
-        super().__init__(instructions=prompts.RECEPTIONIST[language])
+        super().__init__(
+            instructions=prompts.RECEPTIONIST[language],
+            tools=[tools.clinic_info, tools.find_slots],
+        )
 
 
 server = AgentServer()
@@ -35,6 +43,11 @@ server.setup_fnc = prewarm
 @server.rtc_session()
 async def entrypoint(ctx: JobContext) -> None:
     language = providers.agent_language()
+    # Open DB connections now, in the background, so the first tool call doesn't pay for it.
+    pool_warmup = asyncio.create_task(db.get_pool())
+    pool_warmup.add_done_callback(
+        lambda t: t.exception() and logger.warning("DB pool warm-up failed: %s", t.exception())
+    )
     # Every stage is passed explicitly so the provider choices are visible in code.
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
