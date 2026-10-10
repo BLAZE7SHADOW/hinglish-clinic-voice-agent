@@ -63,6 +63,14 @@ Optimization candidates from the baseline (not applied; the design puts the opti
 - Week 3 plan: phase-aware endpointing (dynamic as a comparison) and a backchannel filter, tested on a set that includes multi-turn calls.
 - An STT word drop ("Okay, [thank] you") is probably Deepgram's 25 ms `endpointing_ms` splitting segments. Test `endpointing_ms` alone later (one variable at a time).
 
+## Candidate: TypeSafe Jev ("System One" typed classifier)
+
+Returns typed Choice/Score/Noul answers with confidence instead of text. Vendor claims 70–500 ms and $0.042 per million input tokens; about 68% on its own 4-workflow benchmark; early access (launched September 2026). Nothing independent verified yet.
+- **Not** for the live turn: it can't generate replies, and end-of-turn and barge-in decisions need about 10–50 ms locally, not a network round trip.
+- **Add as a contender in E3** (intent / mode routing: Gemini vs embeddings classifier vs Jev) on our own labelled Hinglish data, judged on accuracy, latency from India and cost.
+- **Add as a contender for post-call QA and guardrail checks** (week 7), validated against hand labels (design §16.2).
+- Before any use: check Hinglish accuracy, hosting region and latency, and redact transcripts (third-party data, design §11).
+
 ## Next task
 
 1. **Voice check:** pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.
