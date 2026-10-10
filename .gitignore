@@ -13,3 +13,6 @@ __pycache__/
 *.jsonl
 
 .DS_Store
+
+# Rendered audio samples
+samples/

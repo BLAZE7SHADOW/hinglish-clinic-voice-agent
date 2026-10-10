@@ -7,7 +7,11 @@ Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.
 - Python 3.12, `uv` (commit `uv.lock`)
 - LiveKit Agents 1.8 on LiveKit Cloud (Build plan), using `AgentServer` + `@server.rtc_session`
 - Silero VAD + `inference.TurnDetector(version="v1-mini")` (pinned, runs locally)
-- STT Deepgram `nova-3` (`language="multi"`), LLM Gemini via `AI_PROVIDER`/`AI_MODEL` in `.env` (default `gemini-3.6-flash`, thinking minimal), TTS Cartesia `sonic-3` (`hi`)
+- Language and providers chosen in `.env`, wired and tuned in `agent/providers.py`:
+  - `AGENT_LANGUAGE=en|hinglish` sets the language for STT, TTS and the prompt at once. English while the engineering is built; Hinglish audio returns in week 4, and the week 3 V1 demo should be Hinglish if at all possible.
+  - STT (`STT_PROVIDER`): Deepgram `nova-3` (`en-IN` / `multi`), or Sarvam `saaras:v4`
+  - LLM (`AI_PROVIDER`/`AI_MODEL`): Gemini, default `gemini-3.6-flash`, thinking minimal
+  - TTS (`TTS_PROVIDER`): Cartesia `sonic-3` (default), or Sarvam `bulbul:v3` / `v4-flash`
 - Supabase Postgres via `asyncpg` (no ORM), `pydantic` for tool inputs, call state and turn records, `pytest` + `pytest-asyncio`, `ruff`
 - Later: Temporal (week 5), Next.js staff view on Vercel (week 7), OpenTelemetry (week 7)
 
@@ -21,7 +25,8 @@ Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.
 - **Writes are idempotent.** Use full-length idempotency keys and never retry blindly. Reads retry once. Every external call has a timeout.
 - **The DB unique constraint on (doctor, start time)** is the final guard against double booking, not application code.
 - **Synthetic data only.** Redact phones, names and DOB in logs and traces. No secrets in the repo; everything `.env*` except `.env.example` is git-ignored.
-- **Latency:** use the metric definitions in design §6. Report p50/p95, never averages alone. Skip the cold first call. Every change gets a row in `docs/LATENCY_LOG.md` next to task success.
+- **Hinglish stays in the code even while audio is English:** `dates.py`, doctor names and the Hinglish test scripts are built on schedule.
+- **Latency:** label every run with `AGENT_LANGUAGE`; English numbers do not carry over to Hinglish. Use the metric definitions in design §6. Report p50/p95, never averages alone. Skip the cold first call. Every change gets a row in `docs/LATENCY_LOG.md` next to task success.
 - **Evals never touch real systems:** no real bookings, messages or calls.
 - **Keep the prompt and per-mode tool list short;** both add to time to first token.
 
@@ -37,6 +42,7 @@ uv run python -m agent.main dev                   # worker connects to LiveKit C
 Then open https://agents-playground.livekit.io, sign in to the same LiveKit Cloud project and connect. `uv run python -m agent.main console` talks to the agent from the terminal with no browser.
 
 ```bash
+uv run python -m scripts.tts_samples           # render voice variants to samples/ to compare by ear
 uv run pytest
 uv run ruff check && uv run ruff format --check
 ```

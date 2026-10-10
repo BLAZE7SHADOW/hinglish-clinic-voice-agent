@@ -9,8 +9,14 @@ Done:
 
 - **Day 1 check passed (2026-10-10):** a live browser call through the Agents Playground worked. The Hinglish greeting played, the agent answered "Clinic कब खुलेगा?" (Deepgram tagged it `hi`), and the worker registered in LiveKit Cloud region India South.
 
+Decision (2026-10-10): **English audio first.** `AGENT_LANGUAGE=en` uses Deepgram `en-IN`, Cartesia English and the English prompt. The reason: build latency timing, tools, interruption handling and evals without Hinglish recognition noise hiding real bugs. Hinglish code (`dates.py`, names, test scripts) is still built on schedule, Hinglish audio returns in week 4, and the week 3 V1 video should be Hinglish if at all possible. Sarvam stays wired but unused.
+
+Sarvam samples: Bulbul v4-flash has Hinglish customer-service voices (`simran_enhi_customer`, `ishita_enhi_customer_expressive`), but first audio took about 1 s against Cartesia's 150–200 ms on the one-shot HTTP path. Re-measure on the streaming path in week 4.
+
 Known issues:
-- The agent invents clinic facts. It said "subah aath baje", and a text test earlier said 9 baje. This is expected until `clinic_info` is built on day 4; until then the prompt could tell it to offer a callback instead of guessing.
+- **Speech recognition misses Hinglish (first call).** Deepgram `multi` turned about 2.8 s of speech into "Uh," (tagged `en`, 6.2 s late) and about 9 s into "Clinic कब खुलेगा?". Sarvam `saaras:v4` codemix is now wired behind `STT_PROVIDER` for an A/B.
+- **The voice sounded rushed and flat** (one pace, no pauses). Cartesia speed is now 0.9, the prompt writes speech-style phrases with commas and openers like "Ji", and Sarvam `bulbul:v3` is wired behind `TTS_PROVIDER`. `scripts/tts_samples.py` renders the variants for listening.
+- The agent invented clinic facts ("subah aath baje"). The prompt now tells it not to guess and to offer a staff callback instead, until `clinic_info` arrives on day 4.
 - `turn_detection=` is deprecated in 1.8; move to `turn_handling=TurnHandlingOptions(...)`.
 - Interruptions were not tested in the first call.
 
@@ -24,4 +30,5 @@ Notes for `DECISIONS.md` (day 2):
 
 ## Next task
 
-1. **Day 2:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").
+1. **English call check:** talk to the agent in English and confirm recognition is clean and the pace sounds right. Pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.
+2. **Day 2:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").
