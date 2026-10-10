@@ -586,3 +586,74 @@ yours, it's the voice choice.
   Stream-safe use means buffering the whole tag so its digits aren't spoken.
 - **Chunking strategy is a latency vs naturalness dial:** smaller chunks give faster first
   audio but more prosody resets. Some stacks use larger first chunks once latency allows.
+
+---
+
+## 13. `find_slots` was slow because of round trips, not queries
+
+**What happened.** The first version of `find_slots` took **680–1,170 ms**. The queries are
+tiny (one doctor, two weeks of rows); the time went on the network.
+
+**How it works.** Each query is a round trip from the worker to the database and back, about
+110–170 ms from the laptop to Mumbai through the pooler. The tool ran **4 queries one after
+another** (doctors, hours, days off, bookings), so it paid 4 round trips. The first call also
+opened new database connections, each costing about 360 ms (TCP plus TLS plus authentication).
+Query execution itself was a few milliseconds.
+
+**Options.**
+- Run independent queries **in parallel** (`asyncio.gather`): 3 queries cost 1 round trip.
+- **Cache** data that doesn't change during a call (the doctor list).
+- **Open connections before they're needed** (at call start, in the background).
+- Fold everything into one SQL query or a database function (fewest round trips, harder to read).
+- Move the worker next to the database (LiveKit Cloud and Supabase, both in India).
+
+**Chosen.** The first three: hours, days off and bookings run in parallel; doctors are cached
+for 60 s; the pool opens all 3 connections at call start. Result: **about 200 ms** per call.
+
+**Verified.** Timed against the seeded Mumbai database: 839 ms on the first call before the
+pool fix, then 195–217 ms on each call after.
+
+**In industry.**
+- **Count round trips, not queries,** on any latency-critical path. A sequence of small
+  dependent calls that each cross the network is called the "N+1 query" or "chatty I/O"
+  problem; batching, parallelism and caching are the standard fixes.
+- **Connection pools are warmed at startup,** so no user request pays connection setup.
+- **Put compute next to data:** in production the worker and the database sit in the same
+  region, often the same data centre, where a round trip is about 1 ms rather than 100+ ms.
+
+---
+
+## 14. A tool turn costs two LLM calls
+
+**What happened.** In the text-mode check, questions that used a tool took **3.1–4.8 s** end to
+end, against about 1.5 s for plain replies.
+
+**How it works.** With tool calling, the LLM is called **twice** for one caller turn:
+1. Request 1: the model reads the conversation and replies with a **tool call**
+   (`find_slots(doctor="Dr. Sharma", when="kal shaam")`). Nothing is spoken yet.
+2. The code runs the tool (about 200 ms).
+3. Request 2: the model reads the tool result and writes the **spoken answer**. Only now does
+   TTS start.
+
+So the caller waits about two LLM first-token times (2 × about 1.3 s) plus the tool before
+hearing anything.
+
+**Options.**
+- **A filler line** while the tool runs ("ek second, main check karti hoon") (design §5.5).
+  This doesn't make the answer faster, but it ends the silence.
+- **A faster LLM** (experiment E1): it helps both calls.
+- **Answer from the tool result in code** for simple cases (template the reply instead of
+  calling the LLM again). Fastest, but less natural.
+- **Speculative tool calls:** start `find_slots` when the transcript clearly asks for
+  availability, in parallel with the LLM's first call.
+- **Smaller prompt and tool list** per mode, which helps the first call (design §6, step 3).
+
+**Chosen.** Nothing yet. Day 5 measures it on voice; the filler and E1 are the first candidates.
+
+**In industry.**
+- **Fillers and acknowledgements during tool calls** are standard in production voice agents,
+  often triggered automatically when a tool takes longer than a few hundred ms.
+- **Fast models for tool selection,** with routing or speculative execution, are common ways to
+  hide the second LLM call.
+- **Teams measure tool turns separately from plain turns,** because averaging them hides the
+  slowest and most important moments (checking availability is the reason the caller rang).
