@@ -84,8 +84,14 @@ Built:
 
 Finding: a tool turn needs two LLM calls (decide, then phrase), 3.1–4.8 s in text mode. Day 5 re-measures this on voice.
 
+## Day 5 (2026-10-10)
+
+- `agent/state.py`: typed CallState plus `check()` guards (per-mode allowlist, verification, read-back). 6 tests. Not wired to write tools yet (week 2).
+- `docs/AUDIO_PATH_FACTS.md`: a verified fact sheet for this setup. **`AUDIO_PATH.md` is yours to write.**
+- Still to do: the 10-call re-run with tools, plus a `LATENCY_LOG.md` row.
+
 ## Next task
 
-1. **Day 4 voice check:** ask "Is Dr. Sharma free tomorrow evening?" on a call.
-2. **Day 5:** `AUDIO_PATH.md` (your own words), `state.py` (call state, not wired to writes yet), then re-run the 10 test calls and add a `LATENCY_LOG.md` row to see what the tools cost.
+1. **Day 5 measurement:** re-run the 10 test calls (they now exercise the tools) and add the "after tools" row.
+2. **Write `docs/AUDIO_PATH.md`** in your own words, using `docs/AUDIO_PATH_FACTS.md`.
 3. **Day 2 leftovers:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").
