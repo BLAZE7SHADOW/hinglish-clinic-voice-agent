@@ -1,0 +1,15 @@
+# Secrets: ignore every env file except the template
+.env*
+!.env.example
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local telemetry logs
+*.jsonl
+
+.DS_Store
