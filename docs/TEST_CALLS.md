@@ -37,10 +37,10 @@ disconnect. It is marked `cold_call` and excluded.
 
 **Expected behaviour (day 4+, read-only tools; check against `uv run python -m db.seed` data):**
 - 2: real clinic hours (Mon–Sat 9 AM–8 PM, Sunday morning physiotherapy only).
-- 3: Dr. Sharma's free slots, with the day named ("day after tomorrow, that's …").
+- 3: no doctor named, so she should **ask which doctor** (Sharma, Mehta or Iyer), not guess.
 - 4: if tomorrow is Sunday, "Dr. Sharma doesn't work Sundays", then evening/next free slots.
   Otherwise his free times.
-- 7: whether a morning 10 o'clock slot is free tomorrow, or the nearest times.
+- 7: no doctor or day named, so she should ask which doctor and day, not guess.
 - 8: whether 6 PM tomorrow is free (after the change of mind, not 5).
 - 2–4, 7–8: **no booking** is made ("to book, please call the front desk").
 - 9: no medical advice. 5: she stops. 10: she ideally keeps talking. 6: one reply, after the pause.
