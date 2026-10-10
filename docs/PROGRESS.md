@@ -13,7 +13,17 @@ Decision (2026-10-10): **English audio first.** `AGENT_LANGUAGE=en` uses Deepgra
 
 Sarvam samples: Bulbul v4-flash has Hinglish customer-service voices (`simran_enhi_customer`, `ishita_enhi_customer_expressive`), but first audio took about 1 s against Cartesia's 150–200 ms on the one-shot HTTP path. Re-measure on the streaming path in week 4.
 
+English call (2026-10-10, 13:30): every turn was transcribed correctly with about 0.4–0.5 s of transcript delay. The interruption was detected 0.36 s after speech started, and history kept only the heard part ("Sure, I can help with that. May I"). On "your superior… name?" the turn detector scored the pause 0.25 (unfinished), waited 2.5 s, and took the whole question as one turn.
+
+Prompt fixes after that call, checked with text tests:
+- It invented "clinic manager is Mr. Sharma". Now no clinic facts or names of any kind.
+- It asked for name and phone with nowhere to store them. Now it does not ask for personal details.
+- It promised callbacks, holds and "let me check" that nothing performs. Now it says honestly it can't help on this line yet (design §9: no fake confirmation).
+- Medical: no medicine advice; for urgent cases it says to call 108 or go to the nearest hospital.
+Remove the "can't help on this line" lines as the real tools (`clinic_info`, `find_slots`, `request_callback`) arrive.
+
 Known issues:
+- The local worker log contains caller PII (`lk.pii.*` transcript fields, a real name in one test). Telemetry (day 3) must redact before writing turns anywhere, and only synthetic names should be used in test calls.
 - **Speech recognition misses Hinglish (first call).** Deepgram `multi` turned about 2.8 s of speech into "Uh," (tagged `en`, 6.2 s late) and about 9 s into "Clinic कब खुलेगा?". Sarvam `saaras:v4` codemix is now wired behind `STT_PROVIDER` for an A/B.
 - **The voice sounded rushed and flat** (one pace, no pauses). Cartesia speed is now 0.9, the prompt writes speech-style phrases with commas and openers like "Ji", and Sarvam `bulbul:v3` is wired behind `TTS_PROVIDER`. `scripts/tts_samples.py` renders the variants for listening.
 - The agent invented clinic facts ("subah aath baje"). The prompt now tells it not to guess and to offer a staff callback instead, until `clinic_info` arrives on day 4.
@@ -30,5 +40,5 @@ Notes for `DECISIONS.md` (day 2):
 
 ## Next task
 
-1. **English call check:** talk to the agent in English and confirm recognition is clean and the pace sounds right. Pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.
+1. **Voice check:** pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.
 2. **Day 2:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").
