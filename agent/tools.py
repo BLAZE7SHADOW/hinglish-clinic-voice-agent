@@ -139,9 +139,13 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
         day = w.start.date()
         if day in days_off or not any(h.weekday == day.weekday() for h in hours):
             result["doctor_not_working_that_day"] = True
-    if not slots and not w.exact_time:
-        later = free_slots(hours, days_off, taken, d.slot_minutes, w.end, search_end, now)
-        if w.part:  # asked for evenings: offer evenings first
+    nothing_that_day = not slots if not w.exact_time else not result["nearest_free_that_day"]
+    if nothing_that_day:
+        later_from = w.end if not w.exact_time else w.exact_time.replace(hour=23, minute=59)
+        later = free_slots(hours, days_off, taken, d.slot_minutes, later_from, search_end, now)
+        if w.exact_time:  # asked for 6 PM: offer times near 6 PM on later days first
+            later = [s for s in later if abs(s.hour - w.exact_time.hour) <= 1] or later
+        elif w.part:  # asked for evenings: offer evenings first
             lo, hi = PARTS_OF_DAY[w.part]
             later = [s for s in later if lo <= s.hour < hi] or later
         result["next_free_after_that"] = [
