@@ -8,7 +8,6 @@ from livekit.agents import (
     JobContext,
     JobProcess,
     cli,
-    inference,
 )
 from livekit.plugins import silero
 
@@ -39,9 +38,7 @@ async def entrypoint(ctx: JobContext) -> None:
     # Every stage is passed explicitly so the provider choices are visible in code.
     session = AgentSession(
         vad=ctx.proc.userdata["vad"],
-        # Pinned: the default picks cloud v1 in dev but local v1-mini in start, which would
-        # make dev and deployed latency numbers incomparable. v1-mini runs locally (supports hi).
-        turn_detection=inference.TurnDetector(version="v1-mini"),
+        turn_detection=providers.build_turn_detector(),
         stt=providers.build_stt(),
         llm=providers.build_llm(),
         tts=providers.build_tts(),

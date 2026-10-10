@@ -122,6 +122,7 @@ def main() -> None:
     ap.add_argument("--since", type=date.fromisoformat, help="YYYY-MM-DD (UTC)")
     ap.add_argument("--include-cold", action="store_true")
     ap.add_argument("--include-greeting", action="store_true")
+    ap.add_argument("--turn", help="turn detector: v1-mini | v1 (rows before E7 count as v1-mini)")
     args = ap.parse_args()
 
     dsn = os.environ.get("DATABASE_URL")

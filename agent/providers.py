@@ -8,7 +8,7 @@ comparisons swap providers without code changes. How each one is tuned stays her
 import os
 
 import aiohttp
-from livekit.agents import stt, tts
+from livekit.agents import inference, stt, tts
 from livekit.plugins import cartesia, deepgram, google, sarvam
 
 # Per-language settings for each provider. English first while the engineering is built;
@@ -90,6 +90,22 @@ def build_tts(
     raise ValueError(f"TTS_PROVIDER={provider!r} is not supported; use 'cartesia' or 'sarvam'")
 
 
+def build_turn_detector() -> inference.TurnDetector:
+    """TURN_DETECTOR=v1-mini (local, text only) or v1 (LiveKit cloud, also hears audio).
+
+    Always pinned: LiveKit's default picks v1 in `dev` and v1-mini in `start`, which would make
+    dev and deployed numbers incomparable (LEARNING.md #2). For v1, local_fallback is off so a
+    gateway failure can't silently swap in v1-mini mid-experiment (LEARNING.md #8); turns then
+    commit on the endpointing delay and the failure shows up in the log.
+    """
+    version = os.environ.get("TURN_DETECTOR", "v1-mini")
+    if version == "v1-mini":
+        return inference.TurnDetector(version="v1-mini")
+    if version == "v1":
+        return inference.TurnDetector(version="v1", local_fallback=False)
+    raise ValueError(f"TURN_DETECTOR={version!r} is not supported; use 'v1-mini' or 'v1'")
+
+
 def describe() -> dict[str, str]:
     """Provider/model labels recorded on every turn, so each number traces to a config."""
     return {
@@ -97,4 +113,5 @@ def describe() -> dict[str, str]:
         "llm": f"{os.environ.get('AI_PROVIDER', 'gemini')}/"
         f"{os.environ.get('AI_MODEL', 'gemini-3.6-flash')}",
         "tts": os.environ.get("TTS_PROVIDER", "cartesia"),
+        "turn": os.environ.get("TURN_DETECTOR", "v1-mini"),
     }
