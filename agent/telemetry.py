@@ -7,6 +7,7 @@ Sources (LiveKit 1.8):
   latency.
 - `overlapping_speech` + `agent_state_changed` events for barge-in stop time.
 - `function_tools_executed` for tool names and durations.
+- `metrics_collected` LLMMetrics for token counts, to check thinking and prompt caching.
 
 All LiveKit timestamps are wall-clock seconds (time.time()); delays are computed by LiveKit.
 Records go to a local JSON-lines file always and to Postgres when DATABASE_URL is set. Writes
@@ -22,12 +23,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from livekit.agents import AgentSession, llm
+from livekit.agents import AgentSession, llm, metrics
 from livekit.agents.inference.interruption import OverlappingSpeechEvent
 from livekit.agents.voice.events import (
     AgentStateChangedEvent,
     ConversationItemAddedEvent,
     FunctionToolsExecutedEvent,
+    MetricsCollectedEvent,
 )
 from pydantic import BaseModel
 
@@ -67,6 +69,12 @@ class TurnRecord(BaseModel):
     agent_audio_start_at: datetime | None = None
     voice_to_voice_ms: float | None = None  # caller stops -> agent audio starts (LiveKit e2e)
 
+    # LLM tokens for this reply: is "minimal" thinking really zero, is prompt caching working?
+    llm_prompt_tokens: int | None = None
+    llm_cached_tokens: int | None = None
+    llm_reasoning_tokens: int | None = None
+    llm_completion_tokens: int | None = None
+
     # Barge-in
     interrupted: bool = False
     interrupt_detect_ms: float | None = None  # caller speech onset -> interruption decided
@@ -77,6 +85,10 @@ class TurnRecord(BaseModel):
 
 def _ms(seconds: float | None) -> float | None:
     return None if seconds is None else round(seconds * 1000, 1)
+
+
+def _sum(items: list[metrics.LLMMetrics], field: str) -> int | None:
+    return sum(getattr(m, field) for m in items) if items else None
 
 
 def _ts(seconds: float | None) -> datetime | None:
@@ -108,6 +120,13 @@ class TurnBuilder:
         self._interrupt_onset: float | None = None
         self._interrupt_detect: float | None = None
         self._agent_stopped_at: float | None = None
+        self._llm: list[metrics.LLMMetrics] = []
+
+    def on_metrics(self, ev: MetricsCollectedEvent) -> None:
+        # Cancelled requests are preemptive generations thrown away when the caller kept
+        # talking, or replies cut off by an interruption; they don't describe this reply.
+        if isinstance(ev.metrics, metrics.LLMMetrics) and not ev.metrics.cancelled:
+            self._llm.append(ev.metrics)
 
     def on_user_message(self, msg: llm.ChatMessage) -> None:
         # If the caller spoke several times before the agent replied, the last segment is
@@ -156,6 +175,10 @@ class TurnBuilder:
             tts_ttfb_ms=_ms(a.get("tts_node_ttfb")),
             agent_audio_start_at=_ts(a.get("started_speaking_at")),
             voice_to_voice_ms=_ms(a.get("e2e_latency")),
+            llm_prompt_tokens=_sum(self._llm, "prompt_tokens"),
+            llm_cached_tokens=_sum(self._llm, "prompt_cached_tokens"),
+            llm_reasoning_tokens=_sum(self._llm, "reasoning_tokens"),
+            llm_completion_tokens=_sum(self._llm, "completion_tokens"),
             interrupted=msg.interrupted,
             interrupt_detect_ms=_ms(self._interrupt_detect) if msg.interrupted else None,
             interrupt_stop_ms=stop_ms,
@@ -164,6 +187,7 @@ class TurnBuilder:
         self._turn_index += 1
         self._user_msg = None
         self._tools = []
+        self._llm = []
         self._interrupt_onset = self._interrupt_detect = self._agent_stopped_at = None
         return record
 
@@ -205,10 +229,11 @@ class TurnSink:
             """insert into turns (call_id, turn_index, channel, language, providers, cold_call,
                 user_speech_start_at, user_speech_end_at, end_of_turn_ms, stt_final_ms,
                 stt_confidence, llm_ttft_ms, llm_first_sentence_ms, tts_ttfb_ms,
-                agent_audio_start_at, voice_to_voice_ms, interrupted, interrupt_detect_ms,
+                agent_audio_start_at, voice_to_voice_ms, llm_prompt_tokens, llm_cached_tokens,
+                llm_reasoning_tokens, llm_completion_tokens, interrupted, interrupt_detect_ms,
                 interrupt_stop_ms, tool_calls)
                values ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20::jsonb)""",
+                $19,$20,$21,$22,$23,$24::jsonb)""",
             r.call_id,
             r.turn_index,
             r.channel,
@@ -225,6 +250,10 @@ class TurnSink:
             r.tts_ttfb_ms,
             r.agent_audio_start_at,
             r.voice_to_voice_ms,
+            r.llm_prompt_tokens,
+            r.llm_cached_tokens,
+            r.llm_reasoning_tokens,
+            r.llm_completion_tokens,
             r.interrupted,
             r.interrupt_detect_ms,
             r.interrupt_stop_ms,
@@ -270,4 +299,5 @@ def attach(
     session.on("overlapping_speech", builder.on_overlap)
     session.on("agent_state_changed", builder.on_agent_state)
     session.on("function_tools_executed", builder.on_tools)
+    session.on("metrics_collected", builder.on_metrics)
     return sink

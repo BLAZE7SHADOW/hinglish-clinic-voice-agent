@@ -128,6 +128,17 @@ def main() -> None:
     for label, n, p50, p95, mx in summary:
         print(f"{label:20s} {n:4d} {fmt(p50):>8s} {fmt(p95):>8s} {fmt(mx):>8s}")
 
+    tok = [r for r in rows if r.get("llm_prompt_tokens") is not None]
+    if tok:
+        reasoning = [r["llm_reasoning_tokens"] or 0 for r in tok]
+        prompt = sum(r["llm_prompt_tokens"] for r in tok)
+        cached = sum(r["llm_cached_tokens"] or 0 for r in tok)
+        print(
+            f"\nLLM tokens over {len(tok)} replies: reasoning p50 {fmt(percentile(reasoning, 50))}"
+            f" / max {max(reasoning)} (0 = no hidden thinking); "
+            f"prompt tokens served from cache {cached}/{prompt} ({100 * cached / prompt:.0f}%)"
+        )
+
     small = [label for label, n, *_ in summary if 0 < n < 20]
     if small:
         print(

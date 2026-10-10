@@ -105,3 +105,35 @@ def test_tool_durations():
     )
     [tool] = b.on_agent_message(agent()).tool_calls
     assert (tool.name, tool.duration_ms, tool.is_error) == ("find_slots", 250.0, False)
+
+
+def llm_metrics(cancelled=False, **tokens):
+    from livekit.agents import metrics
+
+    base = {
+        "label": "x",
+        "request_id": "r",
+        "timestamp": 0.0,
+        "duration": 0.5,
+        "ttft": 0.3,
+        "cancelled": cancelled,
+        "completion_tokens": 10,
+        "prompt_tokens": 300,
+        "prompt_cached_tokens": 0,
+        "total_tokens": 310,
+        "tokens_per_second": 20.0,
+    }
+    return metrics.LLMMetrics(**(base | tokens))
+
+
+def test_token_counts_skip_cancelled_requests():
+    from livekit.agents.voice.events import MetricsCollectedEvent
+
+    b = builder()
+    b.on_metrics(MetricsCollectedEvent(metrics=llm_metrics(cancelled=True, reasoning_tokens=99)))
+    b.on_metrics(
+        MetricsCollectedEvent(metrics=llm_metrics(prompt_cached_tokens=256, reasoning_tokens=12))
+    )
+    r = b.on_agent_message(agent())
+    assert (r.llm_prompt_tokens, r.llm_cached_tokens, r.llm_reasoning_tokens) == (300, 256, 12)
+    assert b.on_agent_message(agent()).llm_prompt_tokens is None  # reset per reply

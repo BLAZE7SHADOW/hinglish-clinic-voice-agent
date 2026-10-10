@@ -23,6 +23,11 @@ create table if not exists turns (
     agent_audio_start_at   timestamptz,
     voice_to_voice_ms      real,                           -- speech end -> agent audio starts
 
+    llm_prompt_tokens      int,                            -- tokens for this reply's LLM requests
+    llm_cached_tokens      int,                            -- prompt tokens served from cache
+    llm_reasoning_tokens   int,                            -- hidden thinking tokens
+    llm_completion_tokens  int,
+
     interrupted            boolean     not null default false,
     interrupt_detect_ms    real,                           -- caller onset -> interruption decided
     interrupt_stop_ms      real,                           -- caller onset -> agent audio stopped
