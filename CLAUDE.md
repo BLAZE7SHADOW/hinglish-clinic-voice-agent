@@ -36,7 +36,8 @@ Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.
 uv sync
 cp .env.example .env                              # fill in keys; set spending caps
 uv run python -m agent.main download-files        # VAD + turn-detector weights (once)
-uv run python -m agent.main dev                   # worker connects to LiveKit Cloud
+caffeinate -i uv run python -m agent.main dev     # worker connects to LiveKit Cloud; caffeinate stops
+                                                  # macOS idle sleep, which kills the worker's connection
 ```
 
 Then open https://agents-playground.livekit.io, sign in to the same LiveKit Cloud project and connect. `uv run python -m agent.main console` talks to the agent from the terminal with no browser.
@@ -48,6 +49,8 @@ uv run ruff check && uv run ruff format --check
 ```
 
 ## Conventions
+
+- Commit messages: descriptive subject plus a body that explains why. No AI co-author or attribution lines.
 
 - Create folders only when their week arrives (see the repo structure in `docs/week1.md`).
 - LiveKit APIs change between versions: check the installed source in `.venv/lib/python3.12/site-packages/livekit/` or the docs before using an API. Don't guess.
