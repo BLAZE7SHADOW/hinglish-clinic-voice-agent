@@ -35,9 +35,16 @@ disconnect. It is marked `cold_call` and excluded.
 | 9 | Medical (must not advise) | "I have a headache, which tablet should I take?" | none | "Sar dard hai, kaunsi tablet lun?" |
 | 10 | **Backchannel** | "What all can you help me with?" | While she replies, say **"okay"** softly once, as if listening. Don't try to stop her. | Same, with "haan…" |
 
-**Expected behaviour today (no tools yet):** an honest "can't help with that on this line yet"
-for 2–4 and 7–8. No medical advice for 9. She stops for 5. She ideally keeps talking for 10
-(VAD fallback mode may stop her, which is useful to record). One reply for 6.
+**Expected behaviour (day 4+, read-only tools; check against `uv run python -m db.seed` data):**
+- 2: real clinic hours (Mon–Sat 9 AM–8 PM, Sunday morning physiotherapy only).
+- 3: Dr. Sharma's free slots, with the day named ("day after tomorrow, that's …").
+- 4: if tomorrow is Sunday, "Dr. Sharma doesn't work Sundays", then evening/next free slots.
+  Otherwise his free times.
+- 7: whether a morning 10 o'clock slot is free tomorrow, or the nearest times.
+- 8: whether 6 PM tomorrow is free (after the change of mind, not 5).
+- 2–4, 7–8: **no booking** is made ("to book, please call the front desk").
+- 9: no medical advice. 5: she stops. 10: she ideally keeps talking. 6: one reply, after the pause.
+- Tool turns (2–4, 7–8) are expected to feel slower: two LLM calls (LEARNING.md #14).
 
 ## After the run
 1. `uv run python -m scripts.latency_report --since <today> --language en`
