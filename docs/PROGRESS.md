@@ -38,6 +38,19 @@ Notes for `DECISIONS.md` (day 2):
 - Google's SDK has its own automatic function calling (AFC), and it is on by default. Before adding tools on day 4, check how it interacts with LiveKit's tool loop.
 - The first call after idle waited about 3 s for a worker process ("no warmed process available"). Exclude it from latency runs.
 
+## Day 3 (2026-10-10): latency telemetry
+
+Built:
+- `agent/telemetry.py`: one `TurnRecord` per agent reply. It is built from LiveKit 1.8's per-message `MetricsReport` (end of turn, STT, LLM first token and first sentence, TTS first audio, e2e voice-to-voice), plus the `overlapping_speech` and `agent_state_changed` events for barge-in stop time, plus tool durations. Rows go to `logs/turns.jsonl` always and to Postgres when `DATABASE_URL` is set, from background tasks with a 5 s DB timeout.
+- `db/migrations/001_turns.sql`, `scripts/migrate.py`, `scripts/latency_report.py` (p50/p95/max per stage, cold calls excluded, prints a `LATENCY_LOG.md` row).
+- `docs/TEST_CALLS.md` (10 scripted calls) and the `docs/LATENCY_LOG.md` template.
+- 8 unit tests (`uv run pytest`).
+
+Not done yet:
+- A live call to confirm rows are written.
+- Create the Supabase project, set `DATABASE_URL` and run `scripts.migrate`.
+- Run the 10 test calls and record the baseline row. **Do not optimize anything before the baseline.**
+
 ## Next task
 
 1. **Voice check:** pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.

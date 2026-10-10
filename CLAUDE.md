@@ -12,6 +12,7 @@ Hinglish voice receptionist for small Indian clinics. Full design: `docs/design.
   - STT (`STT_PROVIDER`): Deepgram `nova-3` (`en-IN` / `multi`), or Sarvam `saaras:v4`
   - LLM (`AI_PROVIDER`/`AI_MODEL`): Gemini, default `gemini-3.6-flash`, thinking minimal
   - TTS (`TTS_PROVIDER`): Cartesia `sonic-3` (default), or Sarvam `bulbul:v3` / `v4-flash`
+- Telemetry: `agent/telemetry.py` writes one row per agent reply to `logs/turns.jsonl` and, when `DATABASE_URL` is set, the `turns` table. It never blocks a call, and stores no transcript text until redaction exists.
 - Supabase Postgres via `asyncpg` (no ORM), `pydantic` for tool inputs, call state and turn records, `pytest` + `pytest-asyncio`, `ruff`
 - Later: Temporal (week 5), Next.js staff view on Vercel (week 7), OpenTelemetry (week 7)
 
@@ -43,6 +44,8 @@ caffeinate -i uv run python -m agent.main dev     # worker connects to LiveKit C
 Then open https://agents-playground.livekit.io, sign in to the same LiveKit Cloud project and connect. `uv run python -m agent.main console` talks to the agent from the terminal with no browser.
 
 ```bash
+uv run python -m scripts.latency_report         # p50/p95 per stage (DB, or logs/turns.jsonl)
+uv run python -m scripts.migrate                # apply db/migrations/*.sql (needs DATABASE_URL)
 uv run python -m scripts.tts_samples           # render voice variants to samples/ to compare by ear
 uv run pytest
 uv run ruff check && uv run ruff format --check

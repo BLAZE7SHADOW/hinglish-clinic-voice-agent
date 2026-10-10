@@ -12,7 +12,7 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import prompts, providers
+from agent import prompts, providers, telemetry
 
 load_dotenv(".env")
 
@@ -46,6 +46,17 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=providers.build_llm(),
         tts=providers.build_tts(),
     )
+
+    sink = telemetry.attach(
+        session,
+        call_id=ctx.job.id,
+        # Browser only until the phone line arrives (week 4); then derive it from the
+        # participant kind (SIP vs standard).
+        channel="browser",
+        language=language,
+        providers=providers.describe(),
+    )
+    ctx.add_shutdown_callback(sink.aclose)
 
     await session.start(room=ctx.room, agent=Receptionist(language))
     session.generate_reply(instructions=prompts.GREETING[language])

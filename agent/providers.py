@@ -88,3 +88,13 @@ def build_tts(
         }
         return sarvam.TTS(**(opts | overrides), http_session=http_session)
     raise ValueError(f"TTS_PROVIDER={provider!r} is not supported; use 'cartesia' or 'sarvam'")
+
+
+def describe() -> dict[str, str]:
+    """Provider/model labels recorded on every turn, so each number traces to a config."""
+    return {
+        "stt": os.environ.get("STT_PROVIDER", "deepgram"),
+        "llm": f"{os.environ.get('AI_PROVIDER', 'gemini')}/"
+        f"{os.environ.get('AI_MODEL', 'gemini-3.6-flash')}",
+        "tts": os.environ.get("TTS_PROVIDER", "cartesia"),
+    }

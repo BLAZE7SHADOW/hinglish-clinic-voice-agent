@@ -16,3 +16,6 @@ __pycache__/
 
 # Rendered audio samples
 samples/
+
+# Local telemetry and logs
+logs/
