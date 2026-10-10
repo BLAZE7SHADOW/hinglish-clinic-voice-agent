@@ -56,6 +56,13 @@ Optimization candidates from the baseline (not applied; the design puts the opti
 3. **Backchannel "okay" stopped the agent** (call 10): the week 3 backchannel filter.
 4. The **cloud interruption detector timed out** twice today: count fallbacks (week 7 observability).
 
+## E7 (2026-10-10): turn detector v1 vs v1-mini
+
+- No improvement (5 vs 6 false waits, different sentences), so reverted to `v1-mini`. Row in `LATENCY_LOG.md`, analysis and research in `LEARNING.md` #10.
+- New findings: soft backchannels interrupt (#11), and a rhythm glitch in one TTS line (#12; samples in `samples/en/rhythm/` to listen to).
+- Week 3 plan: phase-aware endpointing (dynamic as a comparison) and a backchannel filter, tested on a set that includes multi-turn calls.
+- An STT word drop ("Okay, [thank] you") is probably Deepgram's 25 ms `endpointing_ms` splitting segments. Test `endpointing_ms` alone later (one variable at a time).
+
 ## Next task
 
 1. **Voice check:** pick the Cartesia speed from `samples/en/`, and optionally an Indian-English `CARTESIA_VOICE_ID`.

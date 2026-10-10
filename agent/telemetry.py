@@ -45,9 +45,11 @@ logger = logging.getLogger("telemetry")
 JSONL_PATH = Path("logs/turns.jsonl")
 DB_WRITE_TIMEOUT_S = 5.0
 
-# A call is "cold" if no call ended in the last IDLE_COLD_S seconds (week 1: skip the first call
-# after the agent has been idle). LiveKit runs each call in a fresh process, so this has to be
-# tracked outside the process: the marker file's mtime is when the last call ended.
+# A call is "cold" if no call started or ended in the last IDLE_COLD_S seconds (week 1: skip the
+# first call after the agent has been idle). LiveKit runs each call in a fresh process, so this
+# is tracked outside the process: the marker file's mtime is the last call start or end. Touching
+# it at start matters: the previous call's process may still be shutting down when the next
+# call arrives.
 LAST_CALL_MARKER = Path("logs/.last_call_end")
 IDLE_COLD_S = 600
 
@@ -310,6 +312,7 @@ def attach(
         cold_call=_is_cold_call(),
     )
     sink = TurnSink()
+    LAST_CALL_MARKER.touch()
 
     @session.on("conversation_item_added")
     def _on_item(ev: ConversationItemAddedEvent) -> None:

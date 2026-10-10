@@ -89,6 +89,11 @@ def keep(row: dict, args: argparse.Namespace) -> bool:
         and not row.get("user_speech_end_at")
     ):
         return False
+    if args.turn:
+        p = row.get("providers") or {}
+        p = json.loads(p) if isinstance(p, str) else p
+        if p.get("turn", "v1-mini") != args.turn:  # rows from before E7 have no label
+            return False
     if args.channel and row.get("channel") != args.channel:
         return False
     if args.language and row.get("language") != args.language:

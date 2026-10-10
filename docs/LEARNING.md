@@ -468,6 +468,30 @@ detector was cautious on almost a third of turns.
 Hinglish pause set in week 4) *and* the end-of-turn p95. Improving one by breaking the other
 doesn't count.
 
+**E7 result (same day): option 1 did not help.** Re-running the same 10 calls with `v1`:
+- 5 false waits against 6 with `v1-mini`, and they were *different* sentences each time. Both
+  held the real pause.
+- Voice-to-voice p95 got worse.
+
+So the detector model isn't the main lever for us. **What the research says** (LiveKit
+docs, and a LiveKit community thread with the same symptom, 2–3 s after short replies like
+"Yes"/"Okay"):
+- With **fixed** endpointing, waiting the full `max_delay` after a short or ambiguous reply is
+  *expected* behaviour: a single word gives the model too little to go on (LiveKit staff
+  reply).
+- **Dynamic endpointing** (`endpointing={"mode": "dynamic", ...}`, Python only) shortens the
+  effective wait using the session's own pause statistics. One user reported it works better
+  for short replies (anecdotal, no numbers). Catch: it learns *during* a call, and our test
+  calls have only 2 caller turns, so the test set has to contain longer calls to judge it.
+- **Change endpointing at runtime by dialogue phase:** a short `max_delay` right after a yes/no
+  question, a long one while the caller reads out a date or phone number. This fits our design
+  directly: the call-state machine (week 2) knows the phase, so the endpointing can follow the
+  mode.
+
+**Decision.** Revert to `v1-mini`. Do phase-aware endpointing (with dynamic mode as a
+comparison) in the week 3 optimization pass, once modes exist. Test it on a set that includes
+multi-turn calls and the pause cases.
+
 **In industry.**
 - **Semantic and audio turn detection** has replaced fixed silence timeouts in production
   stacks: LiveKit's turn detector, and Pipecat's open, audio-native Smart Turn model.
@@ -476,3 +500,89 @@ doesn't count.
   observability), so tuning comes from data like the table above, not guesswork.
 - **Language-specific tuning:** thresholds and delays differ per language, and LiveKit ships
   different thresholds for English and Hindi. Teams re-tune on their own callers.
+
+
+---
+
+## 11. Soft backchannels ("okay", "ohh") interrupt the agent
+
+**What happened.** In both runs a soft "okay" while Simran was talking stopped her mid-sentence.
+In the E7 run, LiveKit's adaptive interruption model scored the soft **"Okay." at 0.709** and
+an **"ohh"** (transcribed as "So") at **0.658**. The threshold is **0.656**, so both
+interrupted; the "ohh" missed by 0.002. Separately, the cloud detector timed out in two calls
+on day 3, and the VAD fallback interrupts on *any* speech (LEARNING.md #8).
+
+**How it works.** A backchannel is the listener's "I'm with you" signal ("haan", "okay", "hmm").
+In human conversation it is not a bid for the turn. When the caller makes a sound over the
+agent:
+1. VAD hears speech.
+2. The interruption policy decides: stop, or keep talking? LiveKit's **adaptive** mode sends
+   about the first few hundred ms of overlapping audio to a model that scores "real
+   interruption" from 0 to 1. **VAD** mode stops on any speech over `min_duration` (0.5 s).
+3. If it stops and no words follow within `false_interruption_timeout` (2 s), it's a false
+   interruption, and with `resume_false_interruption` the agent resumes.
+
+Soft acknowledgements sit right on the model's decision line, so small differences (volume,
+"okay" vs "ohh") flip the outcome.
+
+**Options** (LiveKit 1.8 `InterruptionOptions`, verified in the installed source):
+1. `min_words=2`: require at least 2 transcribed words to interrupt. One-word backchannels
+   can't stop the agent. Costs: the decision waits for STT text (slower real barge-in), and a
+   one-word "Stop!" or "Wait" no longer works, which matters in a booking flow.
+2. A **backchannel word list** applied only while the agent speaks ("okay", "haan", "hmm",
+   "ji"). Not built into LiveKit 1.8 (open GitHub feature request #4450). We'd build it, as
+   design §5.6 already plans ("your own backchannel filter").
+3. Tune the adaptive threshold, or the `backchannel_boundary` window (backchannels near the
+   start and end of the agent's turn are already suppressed for 1 s by default).
+4. Better interruption *recovery* rather than prevention: resume after a false interruption
+   (on by default).
+
+**Chosen.** Nothing yet; this is week 3 work (design §5.6). Today's logs give the first
+regression cases: soft "okay" = 0.709 and "ohh" = 0.658 must *not* interrupt, and "Sorry, just
+the address" (call 5) *must*. The likely design is option 2 (a word list scoped to agent speech,
+including Hinglish "haan / ji / achha") plus option 1 as a fallback when the cloud model is
+unavailable.
+
+**In industry.**
+- **Audio models first, word rules as backup.** LiveKit's adaptive mode, and several STT vendors
+  with end-of-turn models (Deepgram Flux, AssemblyAI Universal streaming), separate barge-in
+  from backchannel on audio.
+- **Transcript filters with a minimum word count:** AssemblyAI's guide suggests
+  `MIN_WORDS = 2` and deliberately excludes "yes" and "no", since those can be real
+  confirmations.
+- **Ignore lists only while the agent is speaking:** Twilio notes that "yeah" after the agent
+  finishes is a real turn.
+- **Retune per language and market,** since backchannel habits differ: Hindi "haan" and "ji"
+  are far more frequent than English "uh-huh".
+- **Track false yields and swallowed interruptions as metrics, from audio,** because these
+  failures are invisible in transcripts (Decagon, Hamming).
+- Vendor improvement figures (for example "30–50% fewer false interruptions") are vendor
+  claims; benchmark on your own calls.
+
+---
+
+## 12. The agent's last line sounded rhythmically odd (call 9, E7 run)
+
+**What happened.** The caller heard a rhythm glitch in "You are most welcome. Is there anything
+else I can guide you with today?". The log shows **no** interruption, pause or resume in that
+call, so the conversation logic played it straight through. The cause is in the audio
+generation.
+
+**How it works.** Possible causes:
+1. **Sentence chunking:** LiveKit streams the LLM text to the TTS sentence by sentence, so the
+   first word plays sooner (LEARNING.md #1). Prosody can reset at each sentence boundary.
+2. **Voice model:** sonic-3 at speed 0.9, with a voice chosen for Hindi now speaking English.
+3. Plain model variance: the same text can render a little differently each time.
+
+**Next step: reproduce before fixing.** `samples/en/rhythm/` has the exact line rendered three
+ways: as in the call (speed 0.9, your voice), speed 1.0 (your voice), and speed 0.9 with the
+plugin's default voice. If the glitch is in all three, it's chunking or the model; if only in
+yours, it's the voice choice.
+
+**In industry.**
+- **Voice evaluation uses a fixed script, rendered and rated** (MOS or A/B listening). It
+  isn't judged from one live call, because single renders vary.
+- **Pacing markup:** Cartesia sonic-3 supports `<break time="…"/>` and `<speed>` tags.
+  Stream-safe use means buffering the whole tag so its digits aren't spoken.
+- **Chunking strategy is a latency vs naturalness dial:** smaller chunks give faster first
+  audio but more prosody resets. Some stacks use larger first chunks once latency allows.
