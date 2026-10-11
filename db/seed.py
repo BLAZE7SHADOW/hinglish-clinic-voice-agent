@@ -16,8 +16,8 @@ from datetime import date, datetime, time, timedelta
 import asyncpg
 from dotenv import load_dotenv
 
-from agent.dates import CLINIC_TZ
-from agent.db import connect_kwargs
+from agent.dates import CLINIC_TZ, now
+from agent.db import assert_safe_target, connect_kwargs
 from agent.schedule import WorkingHours, free_slots
 
 CLINIC = "Sharma Family Clinic"
@@ -87,8 +87,9 @@ PATIENTS = [
 
 async def seed() -> None:
     load_dotenv(".env")
+    assert_safe_target()
     rng = random.Random(42)
-    today = datetime.now(CLINIC_TZ).date()
+    today = now().date()  # the eval clock when EVAL_MODE=1, else today
     conn = await asyncpg.connect(**connect_kwargs(os.environ["DATABASE_URL"]))
     try:
         async with conn.transaction():

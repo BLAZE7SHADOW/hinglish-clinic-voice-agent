@@ -19,3 +19,9 @@ samples/
 
 # Local telemetry and logs
 logs/
+
+# Labelled eval data is committed
+!evals/*.jsonl
+
+# Eval run outputs
+evals/results/

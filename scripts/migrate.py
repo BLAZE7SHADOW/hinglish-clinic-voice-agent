@@ -12,13 +12,14 @@ from pathlib import Path
 import asyncpg
 from dotenv import load_dotenv
 
-from agent.db import connect_kwargs
+from agent.db import assert_safe_target, connect_kwargs
 
 MIGRATIONS = Path("db/migrations")
 
 
 async def main() -> None:
     load_dotenv(".env")
+    assert_safe_target()
     conn = await asyncpg.connect(**connect_kwargs(os.environ["DATABASE_URL"]))
     try:
         await conn.execute(

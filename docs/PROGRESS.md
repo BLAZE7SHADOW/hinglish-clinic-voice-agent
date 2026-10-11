@@ -1,6 +1,6 @@
 # Progress
 
-## Current status (2026-10-11, week 2 · step 1)
+## Current status (2026-10-12, week 2 · steps 1–6 built, not yet run)
 
 Done:
 - Repo scaffold: `agent/`, `db/migrations/`, `scripts/`, `docs/`; `pyproject.toml` + `uv.lock` (Python 3.12, livekit-agents 1.8.6); `.env.example`; `CLAUDE.md`.
@@ -127,18 +127,47 @@ Known follow-ups:
 - The booking, rescheduling and cancelling modes still say honestly that they can't do it yet,
   until steps 2–4.
 
+## Week 2, steps 2–6 (2026-10-12): verification, writes, callbacks, evals
+
+Built (196 tests pass, 3 DB tests skip without a sandbox):
+- **`agent/tools/` package** (the design's layout): `read.py`, `patients.py`, `bookings.py`,
+  `callback.py`, `common.py`.
+- **Verification** (`verify_caller`): phone plus name or birth date, parsed in code
+  (`identity.py`, `dates.parse_birth_date`), compared exactly. Every detail given must match one
+  patient. Failures don't say which detail was wrong; two failures hand off. **`my_bookings`**
+  returns short refs; only those can be changed.
+- **Booking writes** (`bookings.py`):
+  - `hold_slot` accepts only times `find_slots` offered, with a 3-minute hold.
+  - `confirm_booking` runs the code-checked yes (`confirm.py`, LEARNING #19), then confirms the
+    held row, writes the event and reads back in one transaction.
+  - `reschedule_booking` and `cancel_booking`.
+  - Idempotent repeats and a "write outcome unknown" path. Expired holds are cleared on contention
+    (#20), and holds are released at call end.
+- **Backchannel filter** steps aside while a read-back waits for its answer.
+- **`request_callback`:** one `events` row, a fixed reason list, one per call.
+- **Migration `003_booking_writes.sql`:** `bookings.call_id`, `cancelled_at`,
+  `replaces_booking_id`. **Not applied yet:** run `uv run python -m scripts.migrate` before the
+  next voice call, or `hold_slot` fails.
+- **Evals** (`evals/`, #21):
+  - a sandbox DB plus a frozen clock
+  - 20 scenarios (12 dev / 8 hold-out)
+  - outcome-based scoring, with a gate on wrong actions and verification violations
+  - `intents.jsonl`: 52 labelled lines with a stratified split, for E3
+- **`docs/THREAT_MODEL.md`:** a draft with an OWASP LLM mapping and known gaps.
+
+Not run yet (testing deferred by the user): the evals, the sandbox DB tests, any voice call.
+Prompt sizes grew (greeting 2,003 → 2,490 characters, booking 2,826), so a `LATENCY_LOG.md`
+row is owed at the next measured run.
+
 ## Next task
 
-Week 2 build order (testing deferred by the user on 2026-10-11):
-1. ~~Modes wired into the call~~ (done).
-2. **Caller verification:** phone plus name or DOB against `patients` → `record_verification`;
-   `get_booking` (verified callers only).
-3. **`create_booking`:** a `held` row with expiry, read-back state (and "haan"/"yes" not
-   treated as a backchannel while a read-back is pending), an idempotency key from call and slot,
-   a confirming write, then reading the stored booking back.
-4. **`reschedule_booking` and `cancel_booking`.**
-5. **`request_callback`:** an `events` row only (Temporal comes in week 5).
-6. **Text eval runner** with the first 20 scenarios; labelled intent data; threat model draft.
+1. **Create the eval sandbox:** a second Supabase project (free plan allows two) or a local
+   Postgres. Put its URL in `.env` as `EVAL_DATABASE_URL`.
+2. **Run** (when you OK testing): `uv run pytest` (the sandbox DB tests run once the URL is
+   set), then `uv run python -m evals.run --split dev`. Record counts in `LATENCY_LOG.md`.
+3. **Apply migration 003** to the main DB, then a short voice test: book, reschedule, cancel,
+   and the backchannel calls 5, 8 and 10.
+4. **Week 3:** E1/E6, the filler line during tool calls, checking the read-back's content (gap
+   #1 in `THREAT_MODEL.md`), phase-aware endpointing.
 
-Still open from week 1: the voice re-test (calls 5, 8, 10), `AUDIO_PATH.md` (yours to write),
-`DECISIONS.md`, and the day 6 items.
+Still open from week 1: `AUDIO_PATH.md` (yours to write), `DECISIONS.md`, and the day 6 items.

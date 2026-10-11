@@ -925,3 +925,135 @@ Not yet tested with a real LLM or a voice call.
 - **Tool allowlists per state** are the standard defence against prompt injection (OWASP LLM
   Top 10, "excessive agency"). The allowlist is enforced where the tool runs, not only in what
   the model is shown.
+
+## 19. "Wait for a clear yes" is an LLM claim unless code checks it
+
+**What happened.** Building `confirm_booking` showed that the hard rule "read back doctor, date
+and time and wait for a clear yes" was enforced only by the prompt. `state.check()` required
+`slot.read_back_confirmed`, but nothing set it except the LLM's decision to call the tool. Two
+more problems appeared along the way:
+- The backchannel filter (#15) drops "haan", "yes" and "ji" while the agent is speaking, which
+  is exactly the answer to a read-back.
+- A caller who cuts into a read-back may not have heard the time, yet their "haan" would still
+  count.
+
+**How it works.** When a tool runs, the caller's turn that triggered it is already in
+`session.history` (LiveKit commits the user message at `agent_activity.py:3646` before running
+tools at `:3753`). Each assistant message carries `interrupted`, and its text is cut to what was
+actually played.
+
+**Options.**
+1. Trust the LLM (prompt only).
+2. A separate confirmation tool (`caller_said_yes()`): still the LLM's claim.
+3. **Check the transcript in code** at the moment of the write.
+4. An intent classifier for yes/no: more accurate on unusual phrasing, but it adds a model call
+   on the write path. A candidate for E3.
+
+**Chosen: option 3** (`agent/confirm.py`). The write goes ahead only if all of these hold:
+- the caller's latest turn came after the hold
+- the agent message just before it was not interrupted
+- that turn is a clear yes: at least one yes word, no word meaning no, wait or change, and at
+  most 12 words
+
+The lists cover English, Romanized Hinglish and Devanagari. "na" is deliberately not a no word,
+because "haan na" is an emphatic yes.
+
+While a read-back is pending (`CallState.awaiting_yes`), the backchannel filter steps aside. An
+early "haan" then interrupts the read-back, the check refuses the write, and the agent reads it
+back again in full.
+
+**Asymmetry is the design.** A missed yes costs one more "shall I book it?"; a false yes books the
+wrong slot. So anything mixed is a no.
+
+**Known limits.**
+- Code knows a read-back played, not that it named the right time (`THREAT_MODEL.md` gaps).
+- A "yes" spoken over the last word of the question counts as an interruption and forces a
+  re-read. Voice testing must measure how often that happens.
+
+**Verification.**
+- `tests/test_confirm.py`: 21 cases, including interrupted read-backs, mixed answers and a yes
+  that came before the hold.
+- `test_write_tools.py`: confirm, cancel and reschedule refusals.
+- `test_yes_words_are_answers_while_a_read_back_waits`.
+
+**In industry.**
+- IVR systems have always used constrained yes/no grammars at confirmation points, with
+  re-prompts on no-match. This is the same idea applied to free speech.
+- Voice platforms (Vapi, Retell, Bland) mostly leave confirmation to the prompt. Teams that care
+  about wrong actions add a deterministic or classifier gate at the write, and log every refusal
+  so they can tune the word lists from real calls (week 4, phone audio).
+
+## 20. An expired hold still blocks the slot in the unique index
+
+**What happened.** While writing `hold_slot`, the unique index `bookings_one_active_per_slot`
+covers `status in ('held', 'confirmed')`, with no expiry condition. `find_slots` already treats
+an expired hold as free. So it would offer the time, and the next caller's insert would hit the
+index and fail as "slot taken". An abandoned hold would block a slot forever.
+
+**How it works.** A partial index predicate can't use `now()`: index predicates must be
+immutable, and time moves on. So expiry can never be part of the constraint itself.
+
+**Options.**
+1. A sweeper job that deletes expired holds every minute. This leaves a window, and needs a
+   scheduler (Temporal arrives in week 5).
+2. **Clear the expired hold for that exact slot inside the transaction that places the new
+   hold.**
+3. Redis holds with a TTL, and only confirmed rows in Postgres. That adds a second store and
+   moves the double-booking guard out of the database.
+
+**Chosen: option 2,** plus releasing a call's holds when it ends (`release_call_holds`, keyed by
+the new `bookings.call_id`). This is cheap, and the index stays the final guard.
+- **The race:** two callers clearing the same expired row both try the insert, and the index lets
+  only one win. The other gets `slot_taken`.
+- **Confirming is safe even after expiry:** a confirm accepts our own held row even if it has
+  expired, as long as it still exists. If it exists, nobody else has taken the slot.
+
+**Verification.** `test_an_expired_hold_frees_the_time_and_call_end_releases_holds` and
+`test_two_calls_cannot_hold_the_same_time`, in `tests/test_booking_db.py`. These run against the
+eval sandbox only and haven't run yet: no sandbox database exists.
+
+**In industry.**
+- Ticketing and booking systems (seat maps, restaurant booking) use short holds with expiry. The
+  common designs are a TTL store (Redis `SET NX PX`) or a DB row with lazy cleanup on contention
+  plus a background sweeper.
+- Postgres shops often use an exclusion constraint on a time range for overlapping appointments.
+  Here a unique index on the start time is enough, because slots have fixed lengths.
+
+## 21. Evals need their own database and a frozen clock
+
+**What happened.** The text eval runner has to make real bookings to test booking, but the hard
+rule says evals never touch real systems. The schedule is also seeded relative to today, so
+"tomorrow evening" means different slots every day.
+
+**Options.**
+- **Database:**
+  - a separate schema in the same database (the Supabase pooler doesn't reliably carry
+    `search_path`)
+  - a test clinic in the same database (one missing `clinic_id` filter away from a real
+    booking)
+  - mocking the DB (no unique index, so the most important property goes untested)
+  - **a separate database**
+- **Clock:** real time, or **frozen time in eval mode only**.
+
+**Chosen.**
+- **Database:** `EVAL_DATABASE_URL`, a separate database. `evals/sandbox.enter()` swaps it in, and
+  with `EVAL_MODE=1` every connection checks it isn't the real one (`db.assert_safe_target`).
+  Seed and migrate check it too.
+- **Clock:** `dates.now()` honours `AGENT_FAKE_NOW` only when `EVAL_MODE=1`, so a stray variable
+  can't move a real caller's "kal".
+- **Isolation:** the sandbox is re-seeded before every scenario, so scenarios don't affect each
+  other.
+- **Checks are on outcomes:** event rows per call and tool names and arguments, not reply wording
+  (§16.2). Wrong actions and verification violations fail the run (exit code 1).
+- **Intent labels:** split dev/hold-out per intent (stratified), by hash so the split never
+  changes. A plain hash split had left "cancelling" with 1 dev example and 4 hold-out.
+
+**Verification.** `tests/test_evals.py` covers the scoring rules, the refusal without a sandbox,
+the connect-time check and the intent data. Running without `EVAL_DATABASE_URL` stops before any
+LLM call. The scenarios themselves haven't run yet (they need the sandbox and an LLM key; testing
+was deferred).
+
+**In industry.** Separate test and staging databases are standard. Frozen clocks (freezegun,
+time-travel fixtures) are how teams make date logic testable. Voice-agent eval tools (Coval,
+Hamming, LiveKit's own `session.run` tests) run scripted or simulated callers against a sandbox,
+and score tool calls and end state.
