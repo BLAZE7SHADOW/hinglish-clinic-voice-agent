@@ -159,6 +159,20 @@ Not run yet (testing deferred by the user): the evals, the sandbox DB tests, any
 Prompt sizes grew (greeting 2,003 → 2,490 characters, booking 2,826), so a `LATENCY_LOG.md`
 row is owed at the next measured run.
 
+## Read-back written by code (2026-10-12)
+
+- **`agent/readback.py`:** read-back sentences built from the stored row, with times and dates as
+  spoken words (English and Hinglish).
+- **`tools/common.read_back_gate`:** the first call to `confirm_booking`, `reschedule_booking` or
+  `cancel_booking` speaks the read-back with `session.say` and writes nothing. The second call
+  writes only after a clear yes to that exact sentence, heard in full.
+- **`CallState.pending`** (`PendingWrite`) replaces the per-slot flags. A changed detail needs a
+  new yes, and re-reads are capped at 3. `THREAT_MODEL.md` gap 1 is closed (LEARNING #22).
+- 205 tests pass. Prompts are ~100 characters longer (booking 2,917, rescheduling 2,971).
+- **Check in the voice test:**
+  - does a `say()` read-back get `e2e_latency` in telemetry?
+  - how often does a yes over the end of a read-back force a re-read?
+
 ## Next task
 
 1. **Create the eval sandbox:** a second Supabase project (free plan allows two) or a local
@@ -167,7 +181,6 @@ row is owed at the next measured run.
    set), then `uv run python -m evals.run --split dev`. Record counts in `LATENCY_LOG.md`.
 3. **Apply migration 003** to the main DB, then a short voice test: book, reschedule, cancel,
    and the backchannel calls 5, 8 and 10.
-4. **Week 3:** E1/E6, the filler line during tool calls, checking the read-back's content (gap
-   #1 in `THREAT_MODEL.md`), phase-aware endpointing.
+4. **Week 3:** E1/E6, the filler line during tool calls, phase-aware endpointing.
 
 Still open from week 1: `AUDIO_PATH.md` (yours to write), `DECISIONS.md`, and the day 6 items.

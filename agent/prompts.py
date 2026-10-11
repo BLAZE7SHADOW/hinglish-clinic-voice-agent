@@ -80,6 +80,12 @@ _HOLD = """\
 - When the caller picks a time, call hold_slot with it exactly as find_slots gave it.
 """
 
+_WRITE = """\
+- {tool} reads the {what} back to the caller itself and changes nothing the first time. Don't \
+read it back yourself. After their clear yes, call {tool} again with the same arguments, then \
+confirm from its result.
+"""
+
 _VERIFY = """\
 - First verify: ask for the phone number the booking was made with, then the date of birth (or \
 the patient's name), and call verify_caller. Say nothing about any booking until it returns \
@@ -101,19 +107,18 @@ _MODE_TASKS = {
     + _AVAILABILITY
     + _HOLD
     + "- Unless the caller is verified, ask for the patient's full name, phone number and date "
-    "of birth.\n"
-    "- Then read back doctor, day and time in one sentence and ask if you should book it. Call "
-    "confirm_booking only after a clear yes, with the details. Then confirm from its result.\n",
+    "of birth, then call confirm_booking with them.\n"
+    + _WRITE.format(tool="confirm_booking", what="booking"),
     Mode.RESCHEDULING: "Your task now: move an existing appointment.\n"
     + _VERIFY
     + _AVAILABILITY
     + _HOLD
-    + "- Read back the change, from the old time to the new one, and ask if you should go "
-    "ahead. Call reschedule_booking only after a clear yes.\n",
+    + "- Then call reschedule_booking with the booking's ref.\n"
+    + _WRITE.format(tool="reschedule_booking", what="change"),
     Mode.CANCELLING: "Your task now: cancel an appointment.\n"
     + _VERIFY
-    + "- Name the booking (doctor, day and time) and ask if you should cancel it. Call "
-    "cancel_booking only after a clear yes.\n",
+    + "- Call cancel_booking with the booking's ref.\n"
+    + _WRITE.format(tool="cancel_booking", what="booking"),
     Mode.HANDOFF: "Your task now: this call needs a person at the clinic.\n"
     "- Say so briefly and kindly and call request_callback. Do not answer clinic questions or "
     "check times.\n",

@@ -1057,3 +1057,76 @@ was deferred).
 time-travel fixtures) are how teams make date logic testable. Voice-agent eval tools (Coval,
 Hamming, LiveKit's own `session.run` tests) run scripted or simulated callers against a sandbox,
 and score tool calls and end state.
+
+## 22. Code writes the read-back, so the yes is to what will be written
+
+**What happened.** After #19, code knew that a read-back was spoken in full and that the caller
+said a clear yes. It didn't know what the read-back said. If the LLM said "Wednesday at six" for
+a Tuesday 5 PM hold, the caller's "yes" would still book Tuesday at 5 (`THREAT_MODEL.md` gap 1).
+
+**How it works (LiveKit 1.8).**
+- **A tool can speak and stay silent.** `session.say(text)` from inside a tool queues that exact
+  text for TTS and adds it to the chat history as an assistant message. Returning
+  `llm.ToolResult(output, reply_required=False)` keeps the tool's result in history but asks the
+  LLM for no reply, so the said sentence is the agent's whole turn.
+- **Evals see it too.** `say()` registers with the running `RunResult`, so text evals capture the
+  spoken read-back.
+
+**Options.**
+1. Check the LLM's read-back for the right day and time. That means matching free-form spoken
+   times ("five in the evening", "shaam paanch baje") against the hold: fragile, and it would be
+   tuned to whatever phrasings we happen to see.
+2. Give the LLM an exact sentence and refuse unless it was repeated verbatim. This still costs an
+   LLM generation, and the model may paraphrase.
+3. **Code builds the sentence from the database row and speaks it itself.**
+
+**Chosen: option 3** (`agent/readback.py`, `tools/common.read_back_gate`).
+- **Two calls per write.** The first call to `confirm_booking`, `reschedule_booking` or
+  `cancel_booking` builds the read-back from stored data and speaks it, writing nothing. The
+  second call writes only if the message just before the caller's yes contains that exact
+  sentence, heard in full (`confirm.check_yes`, compared word by word, ignoring spacing and
+  punctuation).
+- **The read-back comes last.** It's spoken after the name and phone are collected, so it
+  includes the patient's name (a misheard name gets caught too) and never the phone or birth
+  date.
+- **A yes covers exactly one version.** `PendingWrite.key` covers the hold or booking id plus the
+  patient details. If anything changes, the old yes doesn't count and the new version is read
+  back.
+- **Re-reads are capped.** A paraphrase, an interruption, or a question in between means code
+  reads it again, at most 3 times, then offers a callback.
+- **An unclear answer gets no re-read.** "Hmm" or "yes but later" goes back to the LLM to ask what
+  the caller wants.
+- **Spoken form.** Times and dates come out as words in English and Hinglish ("five thirty in the
+  evening", "shaam saade paanch baje", "paune das", "dedh baje"), because the text goes straight
+  to TTS.
+
+**Cost.**
+- **Saved:** the read-back turn needs no LLM generation for its reply, since code wrote the
+  sentence.
+- **Added:** one more tool call, and the prompts grew by about 100 characters (booking 2,917,
+  rescheduling 2,971).
+- **To check in the voice test:** whether LiveKit sets `e2e_latency` on a `say()` message. If
+  not, read-back turns would have no voice-to-voice number and the latency report would
+  undercount tool turns.
+
+**Verification.** 205 tests pass. New tests cover:
+- the read-back is spoken and nothing is booked
+- an exact yes reaches the write
+- a paraphrase is replaced by the code read-back
+- a mixed answer gets no re-read
+- re-reads stop at three
+- changed details need a new yes
+- a yes to a booking read-back doesn't allow a cancel
+- `tests/test_confirm.py`: paraphrased and interrupted read-backs, a question in between, and TTS
+  punctuation
+
+Not yet run with an LLM or in a voice call.
+
+**In industry.**
+- Templated confirmations for critical values are the norm wherever a mistake is costly: IVR
+  ("You said Tuesday at 5 PM, press 1"), bank transfers, pharmacy refills, airline changes.
+- LLM voice platforms increasingly let a tool speak a fixed message (`say` with a template,
+  "static" tool messages) for exactly this, keeping generation for the conversational parts.
+- Aviation's read-back/hear-back rule is the strict version: the controller checks the
+  read-back against what was actually issued, which is what `check_yes` does against the stored
+  row.

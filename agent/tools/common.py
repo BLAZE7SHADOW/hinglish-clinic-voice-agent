@@ -6,11 +6,11 @@ import os
 import time
 
 import asyncpg
-from livekit.agents import RunContext
+from livekit.agents import RunContext, llm
 
 from agent import db
-from agent.confirm import user_turns
-from agent.state import Action, CallState, Refused, check
+from agent.confirm import check_yes, user_turns
+from agent.state import Action, CallState, PendingWrite, Refused, check
 
 logger = logging.getLogger("tools")
 
@@ -34,10 +34,12 @@ UNCERTAIN = json.dumps(
 )
 
 
-def guard(context: RunContext[CallState], action: Action) -> str | None:
+def guard(
+    context: RunContext[CallState], action: Action, *, before_read_back: bool = False
+) -> str | None:
     """None if `action` is allowed now, else the refusal for the LLM to act on."""
     try:
-        check(context.userdata, action)
+        check(context.userdata, action, before_read_back=before_read_back)
     except Refused as e:
         logger.warning("refused %s in %s mode: %s", action, context.userdata.mode, e)
         return json.dumps({"error": "not_allowed", "reason": str(e)})
@@ -50,6 +52,68 @@ def error(code: str, **details) -> str:
 
 def turns(context: RunContext[CallState]) -> int:
     return user_turns(context.session.history)
+
+
+def language(context: RunContext[CallState]) -> str:
+    return getattr(context.session.current_agent, "language", "en")
+
+
+MAX_READ_BACKS = 3  # then stop: the caller and agent aren't understanding each other
+
+
+def read_back_gate(
+    context: RunContext[CallState], action: Action, key: str, text: str, tool: str
+) -> str | llm.ToolResult | None:
+    """None once the caller has said a clear yes to this exact read-back; until then, what the
+    write tool must return instead of writing (LEARNING #22).
+
+    First call for a write: code speaks `text` word for word and the tool returns without asking
+    the LLM for a reply. Second call: the caller's answer is checked against that sentence.
+    `key` is everything the read-back covers (ids, patient details); if any of it changed, the
+    old yes doesn't count and the new version is read back.
+    """
+    state = context.userdata
+    p = state.pending
+    if p is None or p.action != action or p.key != key:
+        return _speak(
+            context,
+            PendingWrite(action=action, key=key, text=text, after_user_turn=turns(context)),
+            tool,
+        )
+    if p.confirmed:
+        return None
+    result = check_yes(context.session.history, after_user_turn=p.after_user_turn, read_back=p.text)
+    if result.ok:
+        p.confirmed = True
+        return None
+    logger.info("write held back: %s", result.reason)
+    if not result.read_back_again:
+        return error("not_confirmed", reason=result.reason)
+    if p.times_spoken >= MAX_READ_BACKS:
+        return error(
+            "not_confirmed",
+            reason="the read-back was not answered after several tries",
+            say="Offer a callback from the clinic instead.",
+        )
+    p.times_spoken += 1
+    p.after_user_turn = turns(context)
+    return _speak(context, p, tool)
+
+
+def _speak(context: RunContext[CallState], pending: PendingWrite, tool: str) -> llm.ToolResult:
+    context.userdata.pending = pending
+    context.session.say(pending.text)
+    # No LLM reply: the read-back is the whole of the agent's turn, then the caller answers.
+    return llm.ToolResult(
+        json.dumps(
+            {
+                "read_back_spoken": pending.text,
+                "next": f"Wait for the caller's answer. After a clear yes, call {tool} again "
+                "with the same arguments. Never repeat the read-back yourself.",
+            }
+        ),
+        reply_required=False,
+    )
 
 
 async def sync_mode(context: RunContext[CallState]) -> None:

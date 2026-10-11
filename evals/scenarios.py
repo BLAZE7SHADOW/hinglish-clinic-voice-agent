@@ -5,6 +5,10 @@ names, event rows), not on whether certain words appear in the reply. `split` ke
 set that is never used while tuning prompts: run `--split dev` while working, `holdout` only to
 report.
 
+Scripted callers can't adapt to the agent's order of questions, so the write scenarios end with
+a second "yes" in case the code read-back lands one turn later. A simulated caller (an LLM
+playing the patient) replaces this in week 6.
+
 Placeholders filled from the seeded sandbox: {phone:<patient>} and {dob:<patient>}. The patient
 "Rohan Joshi" always has one upcoming booking (evals/run.py adds it).
 """
@@ -93,6 +97,7 @@ SCENARIOS: list[Scenario] = [
                 "was born on 3 March 1988."
             ),
             "Yes, please book it.",
+            "Yes, that's right.",  # if the read-back came a turn later
         ],
         must_call=["hold_slot", "confirm_booking"],
         events={"booking_created": 1},
@@ -109,6 +114,7 @@ SCENARIOS: list[Scenario] = [
                 "date of birth 3 March 1988."
             ),
             "Haan ji, kar dijiye.",
+            "Haan ji, sahi hai.",
         ],
         must_call=["hold_slot", "confirm_booking"],
         events={"booking_created": 1},
@@ -146,6 +152,7 @@ SCENARIOS: list[Scenario] = [
             "Can I move it to Thursday evening?",
             "The first time you said is fine.",
             "Yes, go ahead.",
+            "Yes, that's right.",
         ],
         must_call=["verify_caller", "my_bookings", "reschedule_booking"],
         events={"booking_rescheduled": 1},
@@ -158,6 +165,7 @@ SCENARIOS: list[Scenario] = [
             "I want to cancel my appointment.",
             "My phone number is {phone:Rohan Joshi}, date of birth {dob:Rohan Joshi}.",
             "Yes, please cancel it.",
+            "Yes, that's right.",
         ],
         must_call=["verify_caller", "my_bookings", "cancel_booking"],
         events={"booking_cancelled": 1},

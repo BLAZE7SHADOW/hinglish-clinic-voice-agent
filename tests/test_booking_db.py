@@ -35,10 +35,15 @@ async def fresh_pool():
         db._pool = None
 
 
+class Session(SimpleNamespace):
+    def say(self, text):
+        self.said.append(text)
+
+
 def ctx(state, *turns):
     history = llm.ChatContext(items=[llm.ChatMessage(role=r, content=[t]) for r, t in turns])
     return SimpleNamespace(
-        userdata=state, session=SimpleNamespace(history=history, current_agent=None)
+        userdata=state, session=Session(history=history, current_agent=None, said=[])
     )
 
 
@@ -68,11 +73,12 @@ async def test_repeated_hold_and_confirm_make_one_booking():
     again = json.loads(await tools.hold_slot(ctx(s), slot=label))
     assert first["held"] and again["held"] and s.slot.hold_id == hold_id
 
-    turns = (("user", label), ("assistant", "Shall I book it?"), ("user", "Yes"))
-    s.slot.held_after_user_turn = 1
-    slot = s.slot
+    first = ctx(s, ("user", label))
+    await tools.confirm_booking(first)  # speaks the read-back, books nothing
+    turns = (("user", label), ("assistant", first.session.said[0]), ("user", "Yes"))
+    slot, pending = s.slot, s.pending
     assert json.loads(await tools.confirm_booking(ctx(s, *turns)))["booked"]
-    s.slot = slot  # the LLM repeats the call after a timeout
+    s.slot, s.pending = slot, pending  # the LLM repeats the call after a timeout
     assert json.loads(await tools.confirm_booking(ctx(s, *turns)))["booked"]
     n = await db.read("select count(*) from bookings where call_id = $1", "eval-c")
     assert n[0]["count"] == 1

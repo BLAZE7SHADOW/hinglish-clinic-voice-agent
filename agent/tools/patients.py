@@ -25,7 +25,7 @@ from agent.state import (
     record_misunderstanding,
     record_verification,
 )
-from agent.tools.common import DB_ERRORS, UNAVAILABLE, clinic_id, error, guard, sync_mode, turns
+from agent.tools.common import DB_ERRORS, UNAVAILABLE, clinic_id, error, guard, sync_mode
 from agent.tools.read import fmt_day_slot
 
 logger = logging.getLogger("tools")
@@ -127,7 +127,6 @@ async def my_bookings(context: RunContext[CallState]) -> str:
         logger.exception("my_bookings failed")
         return UNAVAILABLE
     state.listed_bookings = {i: r["id"] for i, r in enumerate(rows, start=1)}
-    state.bookings_listed_after_user_turn = turns(context)
     return json.dumps(
         {
             "bookings": [

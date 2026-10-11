@@ -5,11 +5,13 @@ The sequence for a new booking:
    expiry goes in, so another caller can't take the time while this one confirms. The partial
    unique index on (doctor, start) for held and confirmed rows is the final guard: two holds on
    one slot can't both exist, whatever the application does.
-2. The agent reads back doctor, day and time. confirm_booking checks in code that the caller's
-   next turn was a clear yes to a read-back that played in full (agent/confirm.py).
-3. confirm_booking turns the held row into a confirmed one and records the event in the same
-   transaction, then reads the stored row back so the agent confirms what is stored, not what it
-   intended.
+2. confirm_booking, first call: code speaks the read-back it wrote (agent/readback.py) and
+   writes nothing.
+3. confirm_booking, second call: only if the caller's answer is a clear yes to that exact
+   sentence, heard in full (agent/confirm.py). It turns the held row into a confirmed one and
+   records the event in the same transaction, then reads the stored row back so the agent
+   confirms what is stored, not what it intended.
+Reschedule and cancel use the same two-call read-back (`read_back_gate`).
 
 Idempotency: a hold's key is `hold:<call id>:<doctor id>:<start>`, full length. Repeating a hold
 returns the same row; confirming updates that row, so repeating a confirm can't create a second
@@ -25,8 +27,7 @@ import re
 import asyncpg
 from livekit.agents import RunContext, function_tool
 
-from agent import db
-from agent.confirm import check_yes
+from agent import db, readback
 from agent.dates import CLINIC_TZ, now, parse_birth_date
 from agent.identity import normalize_name, parse_phone
 from agent.schedule import fmt_slot
@@ -39,7 +40,8 @@ from agent.tools.common import (
     emit,
     error,
     guard,
-    turns,
+    language,
+    read_back_gate,
 )
 
 logger = logging.getLogger("tools")
@@ -135,8 +137,8 @@ async def hold_slot(context: RunContext[CallState], slot: str) -> str:
         doctor_name=chosen.doctor_name,
         starts_at=chosen.starts_at,
         hold_id=hold_id,
-        held_after_user_turn=turns(context),
     )
+    state.pending = None  # a new time: any earlier read-back no longer applies
     return json.dumps(
         {
             "held": True,
@@ -144,18 +146,10 @@ async def hold_slot(context: RunContext[CallState], slot: str) -> str:
             "day": _day(chosen.starts_at),
             "time": fmt_slot(chosen.starts_at),
             "hold_minutes": HOLD_MINUTES,
-            "next": "Read back doctor, day and time and ask for a clear yes.",
+            "next": "Unless the caller is verified, get name, phone and date of birth, then call "
+            "confirm_booking.",
         }
     )
-
-
-def _read_back_given(context: RunContext[CallState], after_user_turn: int) -> str | None:
-    """None if the caller's latest turn is a clear yes to a full read-back, else the refusal."""
-    result = check_yes(context.session.history, after_user_turn=after_user_turn)
-    if result.ok:
-        return None
-    logger.info("write refused: %s", result.reason)
-    return error("not_confirmed", reason=result.reason)
 
 
 @function_tool
@@ -165,7 +159,8 @@ async def confirm_booking(
     phone: str = "",
     birth_date: str = "",
 ) -> str:
-    """Book the held time. Only after reading back doctor, day and time and hearing a clear yes.
+    """Book the held time. The first call reads the booking back to the caller and books
+    nothing; call it again with the same arguments after the caller's clear yes.
 
     Args:
         patient_name: The patient's full name as the caller said it. "" if already verified.
@@ -174,14 +169,10 @@ async def confirm_booking(
     """
     state = context.userdata
     slot = state.slot
+    if refusal := guard(context, Action.CREATE_BOOKING, before_read_back=True):
+        return refusal
     if slot is None or slot.hold_id is None:
         return error("no_slot_held", say="Hold a time with hold_slot first.")
-    if not slot.read_back_confirmed:
-        if refusal := _read_back_given(context, slot.held_after_user_turn):
-            return refusal
-        slot.read_back_confirmed = True  # the yes covers this hold, even if details follow
-    if refusal := guard(context, Action.CREATE_BOOKING):
-        return refusal
 
     details = None
     if state.verification != Verification.VERIFIED:
@@ -205,13 +196,29 @@ async def confirm_booking(
         details = (patient_name.strip(), number, born)
 
     try:
+        if details is None:  # verified: read back the name on file
+            rows = await db.read("select full_name from patients where id = $1", state.patient_id)
+            name = rows[0]["full_name"]
+        else:
+            name = details[0]
+    except DB_ERRORS:
+        logger.exception("confirm_booking failed")
+        return UNAVAILABLE
+    text = readback.booking(slot.doctor_name, slot.starts_at, name, language(context))
+    key = f"{slot.hold_id}|{details or state.patient_id}"
+    if gate := read_back_gate(context, Action.CREATE_BOOKING, key, text, "confirm_booking"):
+        return gate
+    if refusal := guard(context, Action.CREATE_BOOKING):
+        return refusal
+
+    try:
         cid = await clinic_id()
         async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
             status = await conn.fetchval(
                 "select status from bookings where id = $1 for update", slot.hold_id
             )
             if status is None or status == "cancelled":
-                state.slot = None
+                state.slot, state.pending = None, None
                 return error("hold_lost", say="Say the time was released; check times again.")
             if status == "held":
                 patient_id = state.patient_id if details is None else None
@@ -255,23 +262,38 @@ async def confirm_booking(
 
 @function_tool
 async def reschedule_booking(context: RunContext[CallState], ref: int) -> str:
-    """Move the caller's booking to the held time. Only after reading back the change and
-    hearing a clear yes.
+    """Move the caller's booking to the held time. The first call reads the change back to the
+    caller and changes nothing; call it again with the same ref after the caller's clear yes.
 
     Args:
         ref: The ref of the booking to move, from my_bookings.
     """
     state = context.userdata
     slot = state.slot
+    if refusal := guard(context, Action.RESCHEDULE_BOOKING, before_read_back=True):
+        return refusal
     old_id = state.listed_bookings.get(ref)
     if old_id is None:
         return error("unknown_ref", say="Call my_bookings and use one of its refs.")
     if slot is None or slot.hold_id is None:
         return error("no_slot_held", say="Hold the new time with hold_slot first.")
-    if not slot.read_back_confirmed:
-        if refusal := _read_back_given(context, slot.held_after_user_turn):
-            return refusal
-        slot.read_back_confirmed = True
+    try:
+        old_row = await _own_booking(state, old_id)
+    except DB_ERRORS:
+        logger.exception("reschedule_booking failed")
+        return UNAVAILABLE
+    if old_row is None:
+        return error("booking_not_active", say="Say that booking is no longer active.")
+    text = readback.reschedule(
+        old_row["full_name"],
+        old_row["starts_at"],
+        slot.doctor_name,
+        slot.starts_at,
+        language(context),
+    )
+    key = f"{old_id}|{slot.hold_id}"
+    if gate := read_back_gate(context, Action.RESCHEDULE_BOOKING, key, text, "reschedule_booking"):
+        return gate
     if refusal := guard(context, Action.RESCHEDULE_BOOKING):
         return refusal
     try:
@@ -324,19 +346,31 @@ async def reschedule_booking(context: RunContext[CallState], ref: int) -> str:
 
 @function_tool
 async def cancel_booking(context: RunContext[CallState], ref: int) -> str:
-    """Cancel one of the caller's bookings. Only after naming it (doctor, day, time) and hearing
-    a clear yes.
+    """Cancel one of the caller's bookings. The first call reads it back to the caller and
+    cancels nothing; call it again with the same ref after the caller's clear yes.
 
     Args:
         ref: The ref of the booking to cancel, from my_bookings.
     """
-    if refusal := guard(context, Action.CANCEL_BOOKING):
+    if refusal := guard(context, Action.CANCEL_BOOKING, before_read_back=True):
         return refusal
     state = context.userdata
     booking_id = state.listed_bookings.get(ref)
     if booking_id is None:
         return error("unknown_ref", say="Call my_bookings and use one of its refs.")
-    if refusal := _read_back_given(context, state.bookings_listed_after_user_turn):
+    try:
+        row = await _own_booking(state, booking_id)
+    except DB_ERRORS:
+        logger.exception("cancel_booking failed")
+        return UNAVAILABLE
+    if row is None:
+        return error("booking_not_active", say="Say that booking is no longer active.")
+    text = readback.cancel(row["full_name"], row["starts_at"], language(context))
+    if gate := read_back_gate(
+        context, Action.CANCEL_BOOKING, str(booking_id), text, "cancel_booking"
+    ):
+        return gate
+    if refusal := guard(context, Action.CANCEL_BOOKING):
         return refusal
     try:
         async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
@@ -368,6 +402,17 @@ async def cancel_booking(context: RunContext[CallState], ref: int) -> str:
     except DB_ERRORS:
         logger.exception("cancel_booking failed")
         return UNAVAILABLE
+
+
+async def _own_booking(state: CallState, booking_id: int):
+    """The verified caller's own active booking (doctor, start), or None."""
+    rows = await db.read(
+        "select d.full_name, b.starts_at from bookings b join doctors d on d.id = b.doctor_id"
+        " where b.id = $1 and b.patient_id = $2 and b.status = 'confirmed'",
+        booking_id,
+        state.patient_id,
+    )
+    return rows[0] if rows else None
 
 
 async def _find_or_add_patient(conn, cid: int, name: str, phone: str, born) -> tuple:
@@ -406,7 +451,7 @@ async def _stored(conn, booking_id: int):
 
 
 def _done(state: CallState, booking_id: int, outcome: str, r) -> str:
-    state.slot, state.booking_id = None, booking_id
+    state.slot, state.booking_id, state.pending = None, booking_id, None
     return json.dumps(
         {
             outcome: True,

@@ -53,8 +53,17 @@ class Slot(BaseModel):
     doctor_name: str
     starts_at: datetime
     hold_id: int | None = None  # the `held` bookings row, once placed
-    held_after_user_turn: int = 0  # the caller's yes must come in a later turn than the hold
-    read_back_confirmed: bool = False  # set by code after a clear "yes" to the read-back
+
+
+class PendingWrite(BaseModel):
+    """A read-back code has spoken and the write it is waiting to confirm (agent/readback.py)."""
+
+    action: Action
+    key: str  # exactly what was read back: hold or booking id, plus patient details
+    text: str  # the sentence code spoke, word for word
+    after_user_turn: int  # the caller's yes must come in a later turn
+    confirmed: bool = False  # set by code after a clear yes to `text`, heard in full
+    times_spoken: int = 1
 
 
 class CallState(BaseModel):
@@ -68,8 +77,8 @@ class CallState(BaseModel):
     # The verified caller's upcoming bookings, by the short ref the LLM sees (1, 2, ...). Only
     # these can be changed: the LLM never handles raw booking ids.
     listed_bookings: dict[int, int] = Field(default_factory=dict)
-    bookings_listed_after_user_turn: int = 0
     booking_id: int | None = None  # the booking being changed (reschedule / cancel)
+    pending: PendingWrite | None = None  # at most one write waits for a yes at a time
     callback_requested: bool = False
     misunderstandings: int = 0  # repeated "sorry?" leads to handoff (design §7.4)
     history: list[str] = Field(default_factory=list)  # mode changes, for the event log
@@ -80,13 +89,7 @@ class CallState(BaseModel):
 
         While this is true a "haan" or "yes" is an answer, not a backchannel (agent/backchannel.py).
         """
-        slot_pending = (
-            self.slot is not None
-            and self.slot.hold_id is not None
-            and not self.slot.read_back_confirmed
-        )
-        cancel_pending = self.mode == Mode.CANCELLING and bool(self.listed_bookings)
-        return slot_pending or cancel_pending
+        return self.pending is not None and not self.pending.confirmed
 
 
 MAX_VERIFICATION_ATTEMPTS = 2
@@ -127,18 +130,26 @@ ALLOWED: dict[Mode, set[Action]] = {
     Mode.HANDOFF: {Action.REQUEST_CALLBACK},
 }
 NEEDS_VERIFICATION = {Action.READ_OWN_BOOKING, Action.RESCHEDULE_BOOKING, Action.CANCEL_BOOKING}
-NEEDS_READ_BACK = {Action.CREATE_BOOKING, Action.RESCHEDULE_BOOKING}
+NEEDS_READ_BACK = {Action.CREATE_BOOKING, Action.RESCHEDULE_BOOKING, Action.CANCEL_BOOKING}
 
 
-def check(state: CallState, action: Action) -> None:
-    """Raise Refused unless `action` is allowed right now. Called by every tool before it acts."""
+def check(state: CallState, action: Action, *, before_read_back: bool = False) -> None:
+    """Raise Refused unless `action` is allowed right now. Called by every tool before it acts.
+
+    `before_read_back`: every check except the confirmed read-back, for a write tool's first
+    call, which speaks the read-back instead of writing.
+    """
     if action not in ALLOWED[state.mode]:
         raise Refused(f"{action} is not allowed in {state.mode} mode")
     if action == Action.VERIFY_CALLER and state.verification == Verification.FAILED:
         raise Refused("verification already failed on this call")
     if action in NEEDS_VERIFICATION and state.verification != Verification.VERIFIED:
         raise Refused(f"{action} needs a verified caller")
-    if action in NEEDS_READ_BACK and not (state.slot and state.slot.read_back_confirmed):
+    if (
+        action in NEEDS_READ_BACK
+        and not before_read_back
+        and not (state.pending and state.pending.action == action and state.pending.confirmed)
+    ):
         raise Refused(f"{action} needs the caller to confirm doctor, date and time first")
 
 
@@ -149,6 +160,7 @@ def switch_mode(state: CallState, mode: Mode) -> None:
     if mode != state.mode:
         state.history.append(f"{state.mode}->{mode}")
         state.mode = mode
+        state.pending = None  # a read-back belongs to the task it was spoken for
         if mode in (Mode.FAQ, Mode.HANDOFF):
             state.slot = None
         if mode != Mode.CANCELLING and mode != Mode.RESCHEDULING:
