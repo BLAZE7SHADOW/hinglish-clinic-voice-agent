@@ -37,8 +37,13 @@ def enter(fake_now: str = FAKE_NOW) -> None:
 
 async def prepare() -> None:
     """Migrate and re-seed the sandbox. Safe to repeat; refuses anything but the sandbox."""
+    from agent.tools import common, read
     from db import seed
     from scripts import migrate
 
     await migrate.main()
     await seed.seed()
+    # Re-seeding recreates the clinic and doctors with new ids; the tools' short-lived caches
+    # would still hold the old ones and find no working hours.
+    common._clinic_cache = None
+    read._doctors_cache = None

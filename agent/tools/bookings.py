@@ -31,7 +31,7 @@ from agent import db, readback
 from agent.dates import CLINIC_TZ, now, parse_birth_date
 from agent.identity import normalize_name, parse_phone
 from agent.schedule import fmt_slot
-from agent.state import Action, CallState, Slot, Verification, record_verification
+from agent.state import Action, CallState, Mode, Slot, Verification, record_verification
 from agent.tools.common import (
     DB_ERRORS,
     UNAVAILABLE,
@@ -146,7 +146,9 @@ async def hold_slot(context: RunContext[CallState], slot: str) -> str:
             "day": _day(chosen.starts_at),
             "time": fmt_slot(chosen.starts_at),
             "hold_minutes": HOLD_MINUTES,
-            "next": "Unless the caller is verified, get name, phone and date of birth, then call "
+            "next": "Call reschedule_booking with the booking's ref."
+            if state.mode == Mode.RESCHEDULING
+            else "Unless the caller is verified, get name, phone and date of birth, then call "
             "confirm_booking.",
         }
     )

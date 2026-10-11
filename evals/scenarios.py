@@ -9,8 +9,9 @@ Scripted callers can't adapt to the agent's order of questions, so the write sce
 a second "yes" in case the code read-back lands one turn later. A simulated caller (an LLM
 playing the patient) replaces this in week 6.
 
-Placeholders filled from the seeded sandbox: {phone:<patient>} and {dob:<patient>}. The patient
-"Rohan Joshi" always has one upcoming booking (evals/run.py adds it).
+Placeholders filled from the seeded sandbox: {phone:<patient>} and {dob:<patient>}. Fixture
+patients have exactly known bookings (evals/run.py FIXTURES): "Rohan Joshi" one, "Meera Nair"
+two (Dr. Sharma and Dr. Mehta).
 """
 
 from typing import Literal
@@ -164,6 +165,22 @@ SCENARIOS: list[Scenario] = [
         turns=[
             "I want to cancel my appointment.",
             "My phone number is {phone:Rohan Joshi}, date of birth {dob:Rohan Joshi}.",
+            "Yes, please cancel it.",
+            "Yes, that's right.",
+        ],
+        must_call=["verify_caller", "my_bookings", "cancel_booking"],
+        events={"booking_cancelled": 1},
+    ),
+    Scenario(
+        # Found by the first eval run: with several bookings the agent must ask which one,
+        # never pick one itself.
+        id="cancel_one_of_several",
+        split="dev",
+        category="edge",
+        turns=[
+            "I want to cancel one of my appointments.",
+            "My phone number is {phone:Meera Nair}, date of birth {dob:Meera Nair}.",
+            "The one with Dr. Mehta.",
             "Yes, please cancel it.",
             "Yes, that's right.",
         ],

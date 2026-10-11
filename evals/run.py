@@ -41,38 +41,49 @@ from evals.scenarios import BOOKING_EVENTS, SCENARIOS, Scenario
 RESULTS = Path("evals/results")
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}|20\d\d")
 MAX_TOOL_CALLS_PER_TURN = 6  # a tool budget per turn, not per loop (§16.3)
-FIXTURE_PATIENT = "Rohan Joshi"
+# Patients the scenarios use, each with exactly these upcoming bookings:
+# (doctor, days from the frozen today, hour, minute). The seed spreads its own bookings over random
+# patients, so these patients' seeded bookings are removed first.
+FIXTURES = {
+    "Rohan Joshi": [("Dr. Anil Sharma", 2, 11, 0)],  # Wednesday
+    "Meera Nair": [("Dr. Anil Sharma", 2, 12, 0), ("Dr. Priya Mehta", 4, 11, 0)],  # Wed, Fri
+}
 
 
-async def fixture_booking() -> dict[str, dict[str, str]]:
-    """Give the fixture patient one known upcoming booking; return placeholder values."""
+async def fixture_bookings() -> dict[str, dict[str, str]]:
+    """Give each fixture patient exactly their known bookings; return placeholder values."""
     from agent import db
     from agent.dates import CLINIC_TZ, now
 
+    values: dict[str, dict[str, str]] = {"phone": {}, "dob": {}}
     async with db.transaction() as conn:
-        p = await conn.fetchrow(
-            "select id, clinic_id, phone, birth_date from patients where full_name = $1",
-            FIXTURE_PATIENT,
-        )
-        doctor_id = await conn.fetchval(
-            "select id from doctors where full_name = 'Dr. Anil Sharma'"
-        )
-        day = now().date() + timedelta(days=2)  # Wednesday, a Sharma working day
-        start = datetime(day.year, day.month, day.day, 11, tzinfo=CLINIC_TZ)
-        await conn.execute(
-            "delete from bookings where doctor_id = $1 and starts_at = $2", doctor_id, start
-        )
-        await conn.execute(
-            "insert into bookings (clinic_id, doctor_id, patient_id, starts_at, ends_at, status,"
-            " created_by) values ($1, $2, $3, $4, $5, 'confirmed', 'seed')",
-            p["clinic_id"],
-            doctor_id,
-            p["id"],
-            start,
-            start + timedelta(minutes=15),
-        )
-    spoken_dob = f"{p['birth_date'].day} {p['birth_date'].strftime('%B %Y')}"
-    return {"phone": {FIXTURE_PATIENT: p["phone"][3:]}, "dob": {FIXTURE_PATIENT: spoken_dob}}
+        for name, bookings in FIXTURES.items():
+            p = await conn.fetchrow(
+                "select id, clinic_id, phone, birth_date from patients where full_name = $1", name
+            )
+            await conn.execute("delete from bookings where patient_id = $1", p["id"])
+            for doctor, days, hour, minute in bookings:
+                d = await conn.fetchrow(
+                    "select id, slot_minutes from doctors where full_name = $1", doctor
+                )
+                day = now().date() + timedelta(days=days)
+                start = datetime(day.year, day.month, day.day, hour, minute, tzinfo=CLINIC_TZ)
+                await conn.execute(
+                    "delete from bookings where doctor_id = $1 and starts_at = $2", d["id"], start
+                )
+                await conn.execute(
+                    "insert into bookings (clinic_id, doctor_id, patient_id, starts_at, ends_at,"
+                    " status, created_by) values ($1, $2, $3, $4, $5, 'confirmed', 'seed')",
+                    p["clinic_id"],
+                    d["id"],
+                    p["id"],
+                    start,
+                    start + timedelta(minutes=d["slot_minutes"]),
+                )
+            values["phone"][name] = p["phone"][3:]  # as a caller says it, without +91
+            born = p["birth_date"]
+            values["dob"][name] = f"{born.day} {born.strftime('%B %Y')}"
+    return values
 
 
 def fill(text: str, values: dict[str, dict[str, str]]) -> str:
@@ -85,13 +96,14 @@ async def run_scenario(sc: Scenario) -> dict:
     from agent.state import CallState
 
     await sandbox.prepare()
-    values = await fixture_booking()
+    values = await fixture_bookings()
     call_id = f"eval-{sc.id}-{uuid.uuid4().hex[:8]}"
     state = CallState(call_id=call_id)
     calls: list[tuple[str, dict]] = []
     outputs: list[tuple[str, str]] = []
     replies: list[str] = []
     turn_ms: list[float] = []
+    transcript: list[str] = []  # synthetic data only, results are git-ignored
     over_budget = 0
 
     async with AgentSession[CallState](
@@ -100,17 +112,22 @@ async def run_scenario(sc: Scenario) -> dict:
         await session.start(Receptionist(sc.language))
         for line in sc.turns:
             t0 = time.perf_counter()
-            result = await session.run(user_input=fill(line, values))
+            said = fill(line, values)
+            transcript.append(f"caller: {said}")
+            result = await session.run(user_input=said)
             turn_ms.append((time.perf_counter() - t0) * 1000)
             n_calls = 0
             for ev in result.events:
                 if isinstance(ev, FunctionCallEvent):
                     n_calls += 1
                     calls.append((ev.item.name, json.loads(ev.item.arguments or "{}")))
+                    transcript.append(f"tool: {ev.item.name}({ev.item.arguments})")
                 elif isinstance(ev, FunctionCallOutputEvent):
                     outputs.append((ev.item.name, ev.item.output))
+                    transcript.append(f"  -> {ev.item.output}")
                 elif isinstance(ev, ChatMessageEvent) and ev.item.role == "assistant":
                     replies.append(ev.item.text_content or "")
+                    transcript.append(f"agent: {ev.item.text_content}")
             over_budget += n_calls > MAX_TOOL_CALLS_PER_TURN
     await tools.release_call_holds(call_id)
 
@@ -118,7 +135,9 @@ async def run_scenario(sc: Scenario) -> dict:
     events: dict[str, int] = {}
     for r in rows:
         events[r["type"]] = events.get(r["type"], 0) + 1
-    return score(sc, state, calls, outputs, replies, events, turn_ms, over_budget)
+    scored = score(sc, state, calls, outputs, replies, events, turn_ms, over_budget)
+    scored["transcript"] = transcript
+    return scored
 
 
 def score(sc, state, calls, outputs, replies, events, turn_ms, over_budget) -> dict:

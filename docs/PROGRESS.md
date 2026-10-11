@@ -173,14 +173,25 @@ row is owed at the next measured run.
   - does a `say()` read-back get `e2e_latency` in telemetry?
   - how often does a yes over the end of a read-back force a re-read?
 
+## First test and eval run (2026-10-12)
+
+- **`pytest`: 208 pass**, including the 3 sandbox DB tests. They first failed on stale
+  doctor/clinic caches after re-seeding, now cleared in `sandbox.prepare()` (LEARNING #23).
+- **Dev evals: 13 of 13**, with 0 wrong actions, 0 verification violations and 0 refused tool
+  calls. Text turn p50 3,052 / p95 5,178 ms, which is text mode, not voice (`LATENCY_LOG.md` row).
+  The first run was 10 of 12 because of a fixture bug (the patient had 5 bookings, not 1). The
+  agent was right to ask which one. The fixture was fixed and `cancel_one_of_several` added.
+- The eval results now keep the transcript per scenario (`evals/results/`, git-ignored).
+- The `hold_slot` hint now names `reschedule_booking` in rescheduling mode.
+- **Not run:** the hold-out split (kept for reporting) and the voice test.
+
 ## Next task
 
 1. ~~Create the eval sandbox~~ (done 2026-10-12): Docker container `clinic-eval-db` (Postgres
    17.11, the same version as Supabase), `127.0.0.1:54329/clinic_eval`, data in the volume
    `clinic-eval-pgdata`, restarts with Docker. Migrated and seeded. The URL is in `.env` as
    `EVAL_DATABASE_URL`.
-2. **Run** (when you OK testing): `uv run pytest` (the sandbox DB tests run once the URL is
-   set), then `uv run python -m evals.run --split dev`. Record counts in `LATENCY_LOG.md`.
+2. ~~Run pytest and dev evals~~ (done 2026-10-12: 208 pass, 13 of 13).
 3. ~~Apply migration 003~~ (done 2026-10-12 on Supabase). Next: a short voice test of book,
    reschedule and cancel, and the backchannel calls 5, 8 and 10.
 4. **Week 3:** E1/E6, the filler line during tool calls, phase-aware endpointing.

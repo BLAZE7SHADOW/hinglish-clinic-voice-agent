@@ -1130,3 +1130,44 @@ Not yet run with an LLM or in a voice call.
 - Aviation's read-back/hear-back rule is the strict version: the controller checks the
   read-back against what was actually issued, which is what `check_yes` does against the stored
   row.
+
+## 23. The first eval run: a stale cache and a fixture that lied
+
+**What happened.** The first `pytest` run against the sandbox failed 2 of 3 DB tests: after the
+first test, `find_slots` found no free times at all. Then the first dev eval run passed 10 of 12.
+Rescheduling and cancelling never reached their write tools.
+
+**Mechanism 1, the stale cache.** Each test (and each eval scenario) re-seeds the sandbox, which
+deletes the clinic and recreates its doctors with new ids. `find_slots` caches the doctor list
+for 60 s, and `clinic_id()` the clinic id for 5 minutes. So the next test looked up the working
+hours of doctor ids that no longer existed, found none, and returned no free slots. In production
+doctors are never deleted mid-call, so this only shows up when data is replaced under a running
+process. But a cache with no way to invalidate it is a trap.
+
+**Fix 1.** `sandbox.prepare()` clears both caches after re-seeding. The production TTLs stay.
+When the staff view can edit doctors (week 7), a change must invalidate the cache too, or
+expire it at most one call later.
+
+**Mechanism 2, the fixture.** The scenarios assumed the eval patient has one upcoming booking.
+The seed spreads 151 bookings over 20 random patients, so Rohan Joshi had 5. The agent listed
+them and asked "which one?" every time, which is correct. The scripted caller can't answer that,
+so the call went in circles, and in the cancel scenario the agent handed off with a callback.
+That's also correct behaviour.
+
+**Fix 2 (the test, not the agent).** The fixture now gives each eval patient exactly its stated
+bookings (`evals/run.py FIXTURES`). The agent's "which one?" behaviour became its own scenario
+(`cancel_one_of_several`), following the failure-to-eval rule (§16.2). Changing the agent to pass
+would have been tuning to the test.
+
+**Verification.**
+- `pytest`: 208 pass, including the 3 sandbox tests (double hold refused, repeated
+  hold/confirm = one booking, expired hold freed, holds released at call end).
+- Dev evals: 13 of 13, with 0 wrong actions and 0 verification violations.
+- The transcripts show the code read-back spoken word for word, and the write only on the second
+  call, after "Yes".
+
+**In industry.** A failing eval needs triage before a fix: an agent bug, a test bug, or a spec
+gap. Teams keep the transcript for every eval run for exactly this reason. The runner now stores
+it in the results file (synthetic data only, git-ignored). Scripted callers break when the agent
+asks a reasonable question the script didn't expect. That's why voice-agent eval tools move to
+simulated callers, an LLM playing the patient with a goal and a persona (planned for week 6).
