@@ -23,7 +23,15 @@ from livekit.agents import RunContext, function_tool
 
 from agent import db
 from agent.dates import CLINIC_TZ, PARTS_OF_DAY, resolve
-from agent.schedule import Doctor, WorkingHours, fmt_fee, fmt_slot, free_slots, match_doctors
+from agent.schedule import (
+    Doctor,
+    WorkingHours,
+    fmt_fee,
+    fmt_slot,
+    free_slots,
+    fuzzy_match_doctor,
+    match_doctors,
+)
 
 logger = logging.getLogger("tools")
 
@@ -86,6 +94,9 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
     try:
         doctors = await _doctors()
         matches = match_doctors(doctor, doctors)
+        guessed = None if matches else fuzzy_match_doctor(doctor, doctors)
+        if guessed:
+            matches = [guessed]
         if len(matches) != 1:
             return json.dumps(
                 {
@@ -111,7 +122,8 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
         "doctor": d.full_name,
         "specialty": d.specialty,
         "when_understood": w.description,
-        "assumptions_to_confirm": w.assumptions,
+        "assumptions_to_confirm": w.assumptions
+        + ([f"'{doctor}' taken as {d.full_name} (name may be misheard)"] if guessed else []),
     }
     if w.exact_time:
         result["requested_time_free"] = w.exact_time in set(

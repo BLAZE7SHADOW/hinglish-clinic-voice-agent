@@ -43,6 +43,7 @@ from agent.db import connect_kwargs
 logger = logging.getLogger("telemetry")
 
 JSONL_PATH = Path("logs/turns.jsonl")
+USAGE_PATH = Path("logs/usage.jsonl")  # one line per call: tokens, audio seconds, characters
 DB_WRITE_TIMEOUT_S = 5.0
 
 # A call is "cold" if no call started or ended in the last IDLE_COLD_S seconds (week 1: skip the
@@ -293,6 +294,19 @@ class TurnSink:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._pool is not None:
             await self._pool.close()
+
+
+def write_usage(session: AgentSession, *, call_id: str) -> None:
+    """Per-call usage from LiveKit's own collector (session.usage), for cost per call.
+
+    LiveKit's UsageCollector (in older tutorials) is deprecated; AgentSession now collects the
+    same numbers itself, per provider/model. Called at shutdown, when the call is complete.
+    """
+    usage = [u.model_dump() | {"type": type(u).__name__} for u in session.usage.model_usage]
+    line = json.dumps({"call_id": call_id, "at": datetime.now(UTC).isoformat(), "usage": usage})
+    JSONL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _append(USAGE_PATH, line + "\n")
+    logger.info("call usage: %s", line)
 
 
 def _append(path: Path, line: str) -> None:

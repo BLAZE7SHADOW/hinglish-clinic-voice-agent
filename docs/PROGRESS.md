@@ -90,8 +90,29 @@ Finding: a tool turn needs two LLM calls (decide, then phrase), 3.1–4.8 s in t
 - `docs/AUDIO_PATH_FACTS.md`: a verified fact sheet for this setup. **`AUDIO_PATH.md` is yours to write.**
 - Still to do: the 10-call re-run with tools, plus a `LATENCY_LOG.md` row.
 
+## Day 5 (2026-10-11): voice run with tools, then three fixes
+
+Measured (row in `LATENCY_LOG.md`; DB re-seeded for today):
+- **Task success:** 9 of 10 calls correct from the DB, nothing invented, no booking offers, the medical refusal correct, the call 6 pause held.
+- **Tool turns** p50 about 3.9 s vs about 2.2 s without tools (two LLM calls, #14). EoT false waits still 6 of 27.
+
+Built after the run (103 tests pass):
+- **Backchannel filter** (`agent/backchannel.py`, LEARNING #15): "okay", "haan", "hmm" while she talks no longer stop her. "Wait", "ruko" and "sorry…" still do.
+- **Fuzzy doctor matching** (LEARNING #16): STT's "Harmer" or "Sharpa" maps to Dr. Sharma, and she confirms the guess aloud.
+- **Fallback providers** (LEARNING #17):
+  - Chains: STT Deepgram → Sarvam, LLM Gemini 3.6 Flash → 2.5 Flash, TTS Cartesia → Sarvam.
+  - The chaos test found a bug: Gemini rejects deadlines under 10 s, which would have failed every call. Fixed, and re-tested.
+- **Per-call usage:** `logs/usage.jsonl` gets one line per call from LiveKit's `session.usage` (tokens, STT audio seconds, TTS characters), for cost per call.
+
+Known follow-ups:
+- **Week 2:** when a read-back confirmation is pending, "yes", "haan" and "ji" must not be treated as backchannels.
+- **Experiment:** Deepgram `keyterm` for doctor names, measured on its own.
+- **E8:** BVC noise cancellation, quiet room vs TV in the background.
+- **Week 3:** a filler line during tool calls; E1 (a faster LLM).
+
 ## Next task
 
-1. **Day 5 measurement:** re-run the 10 test calls (they now exercise the tools) and add the "after tools" row.
+1. **Short voice re-test of the fixes:** calls 5 (must still stop), 8 (say "Doctor Sharma") and 10 (soft "okay": she must keep talking). Add a `LATENCY_LOG.md` note.
 2. **Write `docs/AUDIO_PATH.md`** in your own words, using `docs/AUDIO_PATH_FACTS.md`.
-3. **Day 2 leftovers:** pick a Cartesia voice that handles Hinglish, refine the receptionist prompt, test interruptions with default settings and note what happens, then start `docs/DECISIONS.md` ("Why LiveKit", "Why these providers").
+3. **Start `docs/DECISIONS.md`** ("Why LiveKit", "Why these providers", and now "why fallbacks").
+4. **Day 6:** resume, LinkedIn post, the 60 s recording (Hinglish when you're ready; the user deferred Hinglish on 2026-10-11).

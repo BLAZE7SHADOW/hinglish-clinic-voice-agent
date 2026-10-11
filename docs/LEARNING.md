@@ -537,7 +537,7 @@ Soft acknowledgements sit right on the model's decision line, so small differenc
 4. Better interruption *recovery* rather than prevention: resume after a false interruption
    (on by default).
 
-**Chosen.** Nothing yet; this is week 3 work (design §5.6). Today's logs give the first
+**Chosen.** Built early, on 2026-10-11, after the day 5 run showed it again (see #15). Originally planned for week 3 (design §5.6). Today's logs give the first
 regression cases: soft "okay" = 0.709 and "ohh" = 0.658 must *not* interrupt, and "Sorry, just
 the address" (call 5) *must*. The likely design is option 2 (a word list scoped to agent speech,
 including Hinglish "haan / ji / achha") plus option 1 as a fallback when the cloud model is
@@ -657,3 +657,160 @@ hearing anything.
   hide the second LLM call.
 - **Teams measure tool turns separately from plain turns,** because averaging them hides the
   slowest and most important moments (checking availability is the reason the caller rang).
+
+---
+
+## 15. The backchannel filter (built, day 5)
+
+**What happened.** Day 5, call 10: while Simran listed what she could do, a soft "okay" scored
+**0.69** against the 0.656 threshold. She stopped at "…and fees. I can", and never continued.
+The caller had to say "Continue. Continue." (#11 has the background.)
+
+**How it works (traced in LiveKit 1.8.6 source, `voice/agent_activity.py`).** It's a
+two-step failure:
+1. The adaptive model flags the overlap as an interruption, so LiveKit **pauses** the agent's
+   audio (it doesn't cancel it yet) and starts a 2 s "false interruption" timer.
+2. Deepgram's **final transcript** "Okay." arrives. In `on_final_transcript`, LiveKit treats any
+   final transcript as proof of a real interruption, so it **interrupts the paused speech**.
+   After that, there's nothing left to resume.
+
+So raising the audio threshold alone can't fix it, because the words stage kills the speech
+anyway. The fix has to look at **what was said**.
+
+**Options.** These are compared in #11: raising the threshold (would also block call 8's real
+answer, which scored 0.68), `min_words=2` (blocks "wait" and "ruko"), or a word list.
+
+**Chosen.** A word list in `agent/backchannel.py`, active only while agent speech is in
+progress:
+- **The words:** okay, hmm, right, yeah, haan, ji, achha, theek hai, plus Devanagari forms for
+  Sarvam's codemix output. Words that ask her to stop (wait, no, nahi, ruko, sorry) are never
+  on the list.
+- **On the final transcript:** if it's only backchannel words, the pause is kept (not turned
+  into an interruption), and the resume timer is shortened to 0.5 s.
+- **At end of turn:** the turn is dropped and no reply is generated. This is the same path
+  LiveKit's own `min_words` gate uses.
+- **Then:** LiveKit's false-interruption timer resumes her speech **where it paused**.
+
+LiveKit has no public hook for this; the hook it offers, `on_user_turn_completed`, runs *after*
+the speech is already interrupted. So we wrap two internal methods. `tests/test_backchannel.py`
+checks their names and parameters, so a LiveKit upgrade that changes them fails a test rather
+than silently switching the filter off.
+
+**Known limit (fix in week 2).** "Yes", "yeah", "haan" and "ji" are on the list. When booking
+asks "shall I book 5 PM?" and the caller says "haan" while she's still finishing her sentence,
+that "haan" is a **confirmation**, not a backchannel. When a read-back confirmation is pending
+(`CallState.slot` set and not yet confirmed), confirmation words must be taken out of the
+filter.
+
+**Verification.**
+- Unit tests (30 cases): backchannels in English, Hinglish and Devanagari are dropped. "Wait", "ruko",
+  "no", "Okay, wait", "Sorry, just the address" and replies after she finishes all still go
+  through.
+- Re-test on voice: calls 5 and 10 (call 5 must still stop, call 10 must not).
+
+**In industry.**
+- **Vapi and Retell ship a backchannel/ignore word list as a setting,** applied only while the
+  agent speaks. That's the same design as ours.
+- **Contact-centre systems also make the list depend on the conversation state.** During a
+  yes/no confirmation, "yes" is a real answer. This is our week 2 item.
+- **Wrapping framework internals is a known trade-off:** teams do it when the framework lags
+  behind a need (here, LiveKit GitHub issue #4450), and pin the version with a test exactly as
+  we did. The longer-term fix is to upstream it, or move to the public hook once it exists.
+
+---
+
+## 16. STT misheard "Sharma" as "Harmer" and "Sharpa"
+
+**What happened.** Day 5, call 8: the caller said "Doctor Sharma" twice. Deepgram returned
+"Doctor, Harmer", then "doctor Sharpa". `find_slots` returned `doctor_not_found` both times.
+The LLM only recovered on the third try, by passing "Dr. Anil Sharma" itself.
+
+**How it works.** STT picks the most likely word sequence for the sound it hears. "Sharma"
+isn't common in the English training data, so nearby English words ("Harmer") win, especially
+when the start of the word is soft. Our matcher needed an exact word match, so every mishearing
+became a dead end.
+
+**Options.**
+1. **Fuzzy matching in code** against the real doctor list: no latency cost, works with any STT.
+2. **Deepgram `keyterm`** (nova-3 key-term prompting): tell STT which names to expect (Sharma,
+   Mehta, Iyer, Lotus Lane). It fixes the problem at the source, but it changes STT behaviour,
+   so it must be measured as its own experiment.
+3. Ask the caller to spell the name: a poor voice experience, and a last resort.
+
+**Chosen.** Option 1 now; option 2 later as its own measured experiment.
+- `fuzzy_match_doctor` (in `agent/schedule.py`) runs only when the exact match finds nothing.
+- It uses string similarity (difflib) with a 0.65 threshold. "Harmer" scores 0.67 and "Sharpa"
+  0.83 against "Sharma".
+- It refuses to guess when two names are about equally close.
+- A fuzzy guess is **never used silently.** `find_slots` adds "'Doctor Harmer' taken as
+  Dr. Anil Sharma" to `assumptions_to_confirm`, and the prompt already makes her confirm those
+  aloud.
+
+**Verification.** New tests use the real mishearings, Indian spellings (Sarma, Metha, Kavitha),
+and words that must *not* match (doctor, tomorrow, Gupta, Mr Verma). All pass.
+
+**In industry.**
+- **Production systems use both layers:** custom vocabulary or boosting at the STT (Deepgram
+  keyterms, Google speech adaptation, Azure phrase lists) *and* fuzzy or phonetic matching
+  against the database (Soundex/Metaphone, or edit distance).
+- **The guess is always confirmed:** "Dr. Sharma, right?" A wrong doctor is worse than a
+  re-ask.
+- **Indian names, places and Hinglish are known STT weak spots,** which is why
+  India-specialised STT (Sarvam) and vocabulary lists matter for this market.
+
+---
+
+## 17. Fallback providers, and the timeout that would have broken every call
+
+**What happened.** We added LiveKit `FallbackAdapter`s:
+- **STT:** Deepgram, then Sarvam.
+- **LLM:** Gemini 3.6 Flash, then Gemini 2.5 Flash.
+- **TTS:** Cartesia, then Sarvam.
+
+The first chaos test (a deliberately non-existent primary model) showed the switch happening,
+and then **the backup failed too**, with a 400: *"Manually set deadline 5s is too short.
+Minimum allowed deadline is 10s."*
+
+**How it works.**
+- **Why fallbacks:** without them, any one provider's outage, rate limit or 5xx means a dead
+  call. The adapter tries providers in order and marks a failed one unavailable. It keeps
+  checking that provider in the background and switches back when it recovers.
+- **What went wrong:** the adapter's `attempt_timeout` isn't only a local timer. The Google
+  plugin sends it to Gemini as the request **deadline**, and Gemini rejects deadlines under
+  10 s. With `attempt_timeout=5.0`, **every** request through the adapter would have failed,
+  primary included. A config meant to make calls safer would have broken all of them. Only the
+  chaos test caught it: the unit test checked the wiring, not a real request.
+
+**Options.** Set `attempt_timeout` to at least 10 s, or leave the LLM without an adapter.
+
+**Chosen.** `LLM_ATTEMPT_TIMEOUT_S = 10.0`.
+- **Hard errors** (4xx/5xx, connection refused) still fail over immediately. The chaos test
+  switched in about 2.2 s, including the backup's own answer.
+- **Only a request that hangs** waits the full 10 s.
+- The TTS adapter retries once (`max_retry_per_tts=1`) before switching, because every retry
+  is dead air.
+- Each switch is logged as "provider failed, falling back: <provider/model>".
+
+**Known limits.**
+- The backup voice (Sarvam) sounds different from Cartesia.
+- The LLM backup is the same company: it covers a model failure, not a Google-wide outage. A
+  second provider's key would cover that.
+- STT failover wasn't chaos-tested with live audio; it uses the same adapter mechanism, and the
+  wiring is unit-tested.
+
+**Verification.**
+- **Real requests:** primary broken → backup answered in 2.2 s; normal path 1.8 s.
+- **TTS:** Cartesia key broken → Sarvam produced the audio.
+- **Unit tests:** `tests/test_providers.py` checks the order of providers in each chain and
+  that a backup is never the same as the primary.
+
+**In industry.**
+- **Multi-provider fallback is standard** for production voice (LiveKit, Vapi and Retell all
+  offer it). Teams also track "fallback activations" as a metric, since a silent failover can
+  hide a degrading primary.
+- **Chaos testing** (break a key or a model name on purpose) is how teams prove a fallback
+  works. Config that only runs during outages is otherwise untested until the worst moment.
+  This entry is a small example of why.
+- **Timeouts are tuned per provider:** each API has its own minimums and limits, so a single
+  global timeout is a common source of exactly this bug.
+

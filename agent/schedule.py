@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from difflib import SequenceMatcher
 
 from agent.dates import CLINIC_TZ
 
@@ -106,6 +107,32 @@ def match_doctors(query: str, doctors: list[Doctor]) -> list[Doctor]:
         return by_name
     specialties = {_SPECIALTY_WORDS[w] for w in words if w in _SPECIALTY_WORDS}
     return [d for d in doctors if d.specialty in specialties]
+
+
+# STT turns names it doesn't know into nearby English words: "Sharma" came back as "Harmer" and
+# "Sharpa" (LEARNING.md #16). 0.65 accepts those (0.67, 0.83) and rejects unrelated words.
+FUZZY_MIN_SIMILARITY = 0.65
+
+
+def fuzzy_match_doctor(query: str, doctors: list[Doctor]) -> Doctor | None:
+    """The one doctor whose name sounds closest to a misheard name, or None if unclear.
+
+    Only for when match_doctors found nothing. The caller must confirm the guess aloud.
+    """
+    words = [w for w in re.sub(r"[^a-z ]+", " ", query.lower()).split() if w not in _FILLER]
+    scored = sorted(
+        (
+            (max(SequenceMatcher(None, w, n).ratio() for w in words for n in _name_words(d)), d)
+            for d in doctors
+            if words
+        ),
+        key=lambda x: -x[0],
+    )
+    if not scored or scored[0][0] < FUZZY_MIN_SIMILARITY:
+        return None
+    if len(scored) > 1 and scored[1][0] >= scored[0][0] - 0.1:
+        return None  # two names about equally close: ask, don't guess
+    return scored[0][1]
 
 
 def _name_words(d: Doctor) -> set[str]:

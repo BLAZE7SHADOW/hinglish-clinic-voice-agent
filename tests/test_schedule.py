@@ -1,7 +1,15 @@
 from datetime import date, datetime, time
 
 from agent.dates import CLINIC_TZ
-from agent.schedule import Doctor, WorkingHours, fmt_fee, fmt_slot, free_slots, match_doctors
+from agent.schedule import (
+    Doctor,
+    WorkingHours,
+    fmt_fee,
+    fmt_slot,
+    free_slots,
+    fuzzy_match_doctor,
+    match_doctors,
+)
 
 SAT = date(2026, 10, 10)
 SUN = date(2026, 10, 11)
@@ -60,3 +68,22 @@ def test_match_by_specialty_in_english_and_hindi():
 def test_formatting():
     assert fmt_slot(at(SUN, 17, 30)) == "5:30 PM" and fmt_slot(at(SUN, 10)) == "10 AM"
     assert fmt_fee(50000) == "500 rupees" and fmt_fee(50050) == "500 rupees 50 paise"
+
+
+def fuzzy(q):
+    d = fuzzy_match_doctor(q, DOCTORS)
+    return d and d.full_name
+
+
+def test_fuzzy_match_catches_stt_mishearings():
+    # Real mishearings from the 2026-10-11 calls (LEARNING.md #16), plus Indian spellings.
+    assert fuzzy("Doctor, Harmer") == "Dr. Anil Sharma"
+    assert fuzzy("doctor Sharpa") == "Dr. Anil Sharma"
+    assert fuzzy("Sarma") == "Dr. Anil Sharma"
+    assert fuzzy("Metha") == "Dr. Priya Mehta"
+    assert fuzzy("Kavitha") == "Dr. Kavita Iyer"
+
+
+def test_fuzzy_match_refuses_to_guess_unrelated_words():
+    for q in ["doctor", "tomorrow", "general", "Gupta", "Mr Verma", ""]:
+        assert fuzzy(q) is None, q

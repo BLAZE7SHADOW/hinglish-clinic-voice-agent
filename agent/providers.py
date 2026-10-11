@@ -5,11 +5,14 @@ comparisons swap providers without code changes. How each one is tuned stays her
 `AGENT_LANGUAGE` picks the language settings for every stage at once (see LANGUAGES).
 """
 
+import logging
 import os
 
 import aiohttp
-from livekit.agents import inference, stt, tts
+from livekit.agents import inference, llm, stt, tts
 from livekit.plugins import cartesia, deepgram, google, sarvam
+
+logger = logging.getLogger("providers")
 
 # Per-language settings for each provider. English first while the engineering is built;
 # Hinglish audio returns in week 4 (design doc §14). Same keys in every entry.
@@ -37,8 +40,8 @@ def agent_language() -> str:
     return lang
 
 
-def build_stt() -> stt.STT:
-    provider = os.environ.get("STT_PROVIDER", "deepgram")
+def build_stt(provider: str | None = None) -> stt.STT:
+    provider = provider or os.environ.get("STT_PROVIDER", "deepgram")
     lang = LANGUAGES[agent_language()]
     if provider == "deepgram":
         return deepgram.STT(model="nova-3", language=lang["deepgram"])
@@ -48,11 +51,11 @@ def build_stt() -> stt.STT:
     raise ValueError(f"STT_PROVIDER={provider!r} is not supported; use 'deepgram' or 'sarvam'")
 
 
-def build_llm() -> google.LLM:
+def build_llm(model: str | None = None) -> google.LLM:
     provider = os.environ.get("AI_PROVIDER", "gemini")
     if provider != "gemini":
         raise ValueError(f"AI_PROVIDER={provider!r} is not wired up yet; only 'gemini' is")
-    model = os.environ.get("AI_MODEL", "gemini-3.6-flash")
+    model = model or os.environ.get("AI_MODEL", "gemini-3.6-flash")
     # Thinking as low as the model allows: it adds directly to time to first token.
     # Gemini 3 takes a level, 2.5 and earlier take a token budget.
     thinking = {"thinking_level": "minimal"} if "gemini-3" in model else {"thinking_budget": 0}
@@ -88,6 +91,56 @@ def build_tts(
         }
         return sarvam.TTS(**(opts | overrides), http_session=http_session)
     raise ValueError(f"TTS_PROVIDER={provider!r} is not supported; use 'cartesia' or 'sarvam'")
+
+
+# Fallbacks: when a provider fails mid-call (outage, timeout, 5xx), LiveKit's FallbackAdapter
+# moves to the next one in the list instead of the call going silent. Order = priority.
+# The backups are worse for us (different voice, different STT), but a call that degrades beats
+# a call that dies. Only Gemini keys exist, so the LLM backup is another Gemini model: it covers
+# a model-level failure, not a full Google outage (add another provider's key to cover that).
+BACKUP_STT = {"deepgram": "sarvam", "sarvam": "deepgram"}
+BACKUP_TTS = {"cartesia": "sarvam", "sarvam": "cartesia"}
+BACKUP_LLM_MODEL = "gemini-2.5-flash"
+# Sent to Gemini as the request deadline, and Gemini rejects anything under 10 s with a 400
+# ("Minimum allowed deadline is 10s"). At 5 s every call failed (LEARNING.md #17). Hard errors
+# (4xx/5xx, connection refused) still fail over immediately; only a hung request waits 10 s.
+LLM_ATTEMPT_TIMEOUT_S = 10.0
+
+
+def build_stt_with_fallback() -> stt.STT:
+    primary = os.environ.get("STT_PROVIDER", "deepgram")
+    adapter = stt.FallbackAdapter([build_stt(primary), build_stt(BACKUP_STT[primary])])
+    adapter.on("stt_availability_changed", _log_availability)
+    return adapter
+
+
+def build_llm_with_fallback() -> llm.LLM:
+    primary = os.environ.get("AI_MODEL", "gemini-3.6-flash")
+    models = [primary] + ([BACKUP_LLM_MODEL] if primary != BACKUP_LLM_MODEL else [])
+    adapter = llm.FallbackAdapter(
+        [build_llm(m) for m in models], attempt_timeout=LLM_ATTEMPT_TIMEOUT_S
+    )
+    adapter.on("llm_availability_changed", _log_availability)
+    return adapter
+
+
+def build_tts_with_fallback() -> tts.TTS:
+    primary = os.environ.get("TTS_PROVIDER", "cartesia")
+    adapter = tts.FallbackAdapter(
+        [build_tts(primary), build_tts(BACKUP_TTS[primary])],
+        max_retry_per_tts=1,  # one retry, then switch: each retry is dead air for the caller
+    )
+    adapter.on("tts_availability_changed", _log_availability)
+    return adapter
+
+
+def _log_availability(ev) -> None:
+    instance = getattr(ev, "stt", None) or getattr(ev, "llm", None) or getattr(ev, "tts", None)
+    label = f"{instance.provider}/{instance.model}" if instance else "?"
+    if ev.available:
+        logger.info("provider recovered: %s", label)
+    else:
+        logger.warning("provider failed, falling back: %s", label)
 
 
 def build_turn_detector() -> inference.TurnDetector:

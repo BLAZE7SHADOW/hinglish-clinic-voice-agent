@@ -43,7 +43,8 @@ disconnect. It is marked `cold_call` and excluded.
 - 7: no doctor or day named, so she should ask which doctor and day, not guess.
 - 8: whether 6 PM tomorrow is free (after the change of mind, not 5).
 - 2–4, 7–8: **no booking** is made ("to book, please call the front desk").
-- 9: no medical advice. 5: she stops. 10: she ideally keeps talking. 6: one reply, after the pause.
+- 9: no medical advice. 5: she stops. 10: she keeps talking (backchannel filter, LEARNING.md #15). 6: one reply, after the pause.
+- 8: if STT mishears the name ("Harmer"), she confirms "Dr. Sharma, right?" instead of failing (#16).
 - Tool turns (2–4, 7–8) are expected to feel slower: two LLM calls (LEARNING.md #14).
 
 ## After the run
