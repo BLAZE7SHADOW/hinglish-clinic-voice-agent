@@ -1,6 +1,6 @@
 # Progress
 
-## Current status (2026-10-10, week 1 · day 1)
+## Current status (2026-10-11, week 2 · step 1)
 
 Done:
 - Repo scaffold: `agent/`, `db/migrations/`, `scripts/`, `docs/`; `pyproject.toml` + `uv.lock` (Python 3.12, livekit-agents 1.8.6); `.env.example`; `CLAUDE.md`.
@@ -114,9 +114,31 @@ Known follow-ups:
 - **E8:** BVC noise cancellation, quiet room vs TV in the background.
 - **Week 3:** a filler line during tool calls; E1 (a faster LLM).
 
+## Week 2, step 1 (2026-10-11): modes wired into the call
+
+- **One agent with modes** (`agent/modes.py`, LEARNING #18): a `switch_mode` tool swaps the
+  agent's instructions and tool list in place. The call state lives in `session.userdata`.
+  Handoff mode has no tools and can't be left.
+- **Per-mode prompts** (`prompts.instructions(language, mode)`): a shared base plus one short
+  task section per mode.
+- **Guards:** every tool runs `guard()` first, against the same `ALLOWED` table that builds each
+  mode's tool list. Booking and rescheduling can also read clinic facts.
+- 125 tests pass. Not yet tried with a real LLM or a voice call (testing skipped on request).
+- The booking, rescheduling and cancelling modes still say honestly that they can't do it yet,
+  until steps 2–4.
+
 ## Next task
 
-1. **Short voice re-test of the fixes:** calls 5 (must still stop), 8 (say "Doctor Sharma") and 10 (soft "okay": she must keep talking). Add a `LATENCY_LOG.md` note.
-2. **Write `docs/AUDIO_PATH.md`** in your own words, using `docs/AUDIO_PATH_FACTS.md`.
-3. **Start `docs/DECISIONS.md`** ("Why LiveKit", "Why these providers", and now "why fallbacks").
-4. **Day 6:** resume, LinkedIn post, the 60 s recording (Hinglish when you're ready; the user deferred Hinglish on 2026-10-11).
+Week 2 build order (testing deferred by the user on 2026-10-11):
+1. ~~Modes wired into the call~~ (done).
+2. **Caller verification:** phone plus name or DOB against `patients` → `record_verification`;
+   `get_booking` (verified callers only).
+3. **`create_booking`:** a `held` row with expiry, read-back state (and "haan"/"yes" not
+   treated as a backchannel while a read-back is pending), an idempotency key from call and slot,
+   a confirming write, then reading the stored booking back.
+4. **`reschedule_booking` and `cancel_booking`.**
+5. **`request_callback`:** an `events` row only (Temporal comes in week 5).
+6. **Text eval runner** with the first 20 scenarios; labelled intent data; threat model draft.
+
+Still open from week 1: the voice re-test (calls 5, 8, 10), `AUDIO_PATH.md` (yours to write),
+`DECISIONS.md`, and the day 6 items.

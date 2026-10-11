@@ -5,7 +5,6 @@ import logging
 
 from dotenv import load_dotenv
 from livekit.agents import (
-    Agent,
     AgentServer,
     AgentSession,
     JobContext,
@@ -14,20 +13,14 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import backchannel, db, prompts, providers, telemetry, tools, vocabulary
+from agent import backchannel, db, prompts, providers, telemetry, vocabulary
+from agent.modes import Receptionist
+from agent.state import CallState
 
 load_dotenv(".env")
 backchannel.install()  # "okay"/"haan" while she talks must not stop her (agent/backchannel.py)
 
 logger = logging.getLogger("agent")
-
-
-class Receptionist(Agent):
-    def __init__(self, language: str) -> None:
-        super().__init__(
-            instructions=prompts.RECEPTIONIST[language],
-            tools=[tools.clinic_info, tools.find_slots],
-        )
 
 
 server = AgentServer()
@@ -51,7 +44,9 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     # Every stage is passed explicitly so the provider choices are visible in code. STT, LLM and
     # TTS each have a backup provider (providers.py) so one provider's outage doesn't end the call.
-    session = AgentSession(
+    session = AgentSession[CallState](
+        # Typed call state that every tool's guard checks (agent/state.py).
+        userdata=CallState(call_id=ctx.job.id),
         vad=ctx.proc.userdata["vad"],
         turn_detection=providers.build_turn_detector(),
         stt=providers.build_stt_with_fallback(),

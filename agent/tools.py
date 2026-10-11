@@ -8,6 +8,8 @@ Rules applied here:
   prompt says to treat it as facts only (design §16.4, data-borne injection).
 - Every DB read has a timeout and one retry (agent/db.py). On failure the tool returns an
   honest error for the agent to say, never a guess (design §9).
+- Every tool checks the typed call state first (`guard`), whatever the LLM asked for. The tool
+  list per mode limits what the LLM sees; the guard is what actually enforces it (design §7.4).
 """
 
 import asyncio
@@ -31,6 +33,7 @@ from agent.schedule import (
     free_slots,
     match_doctors,
 )
+from agent.state import Action, CallState, Refused, check
 
 logger = logging.getLogger("tools")
 
@@ -44,17 +47,30 @@ UNAVAILABLE = {
     "say": "Say honestly that you can't check the schedule right now. Do not guess.",
 }
 
+
+def guard(context: RunContext[CallState], action: Action) -> str | None:
+    """None if `action` is allowed now, else the refusal for the LLM to act on."""
+    try:
+        check(context.userdata, action)
+    except Refused as e:
+        logger.warning("refused %s in %s mode: %s", action, context.userdata.mode, e)
+        return json.dumps({"error": "not_allowed", "reason": str(e)})
+    return None
+
+
 Topic = Literal["hours", "address", "phone", "services", "payment", "parking", "fees", "doctors"]
 
 
 @function_tool
-async def clinic_info(context: RunContext, topic: Topic) -> str:
+async def clinic_info(context: RunContext[CallState], topic: Topic) -> str:
     """Look up a fact about the clinic. Use this instead of answering from memory.
 
     Args:
         topic: What the caller asked about. "fees" gives consultation fees per doctor;
             "doctors" lists the doctors and their specialties.
     """
+    if refusal := guard(context, Action.READ_CLINIC_INFO):
+        return refusal
     try:
         if topic in ("fees", "doctors"):
             doctors = await load_doctors()
@@ -78,7 +94,7 @@ async def clinic_info(context: RunContext, topic: Topic) -> str:
 
 
 @function_tool
-async def find_slots(context: RunContext, doctor: str, when: str) -> str:
+async def find_slots(context: RunContext[CallState], doctor: str, when: str) -> str:
     """Check which appointment times are free. Read-only: it does not book anything.
 
     Args:
@@ -88,6 +104,8 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
             "kal shaam", "tomorrow evening", "next Monday at ten", "parson subah".
             Never convert it to a date yourself. Use "" if the caller gave no day.
     """
+    if refusal := guard(context, Action.READ_SLOTS):
+        return refusal
     now = datetime.now(CLINIC_TZ)
     w = resolve(when, now)
     try:

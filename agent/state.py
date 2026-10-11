@@ -1,8 +1,8 @@
 """Typed call state: what the code knows about the call, independent of what the LLM says.
 
-The LLM proposes actions; code checks this state before any action runs (design §7.2). Day 5
-defines the state and its rules. Week 2 wires it to modes and write tools (create, reschedule,
-cancel), whose guards call `check()`.
+The LLM proposes actions; code checks this state before any action runs (design §7.2). Every
+tool calls `check()` first, and agent/modes.py derives each mode's tool list from `ALLOWED`, so
+the tools the LLM sees and the tools code permits come from one table.
 """
 
 from datetime import datetime
@@ -67,8 +67,16 @@ class Refused(Exception):
 ALLOWED: dict[Mode, set[Action]] = {
     Mode.GREETING: {Action.READ_CLINIC_INFO, Action.READ_SLOTS, Action.REQUEST_CALLBACK},
     Mode.FAQ: {Action.READ_CLINIC_INFO, Action.READ_SLOTS, Action.REQUEST_CALLBACK},
-    Mode.BOOKING: {Action.READ_SLOTS, Action.CREATE_BOOKING, Action.REQUEST_CALLBACK},
+    # Booking and rescheduling can read clinic facts: "what's the fee?" mid-booking must not
+    # force a switch to FAQ, which would clear the slot under discussion.
+    Mode.BOOKING: {
+        Action.READ_CLINIC_INFO,
+        Action.READ_SLOTS,
+        Action.CREATE_BOOKING,
+        Action.REQUEST_CALLBACK,
+    },
     Mode.RESCHEDULING: {
+        Action.READ_CLINIC_INFO,
         Action.READ_OWN_BOOKING,
         Action.READ_SLOTS,
         Action.RESCHEDULE_BOOKING,
