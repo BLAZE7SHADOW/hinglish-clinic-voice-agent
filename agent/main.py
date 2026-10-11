@@ -14,7 +14,7 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import backchannel, db, prompts, providers, telemetry, tools
+from agent import backchannel, db, prompts, providers, telemetry, tools, vocabulary
 
 load_dotenv(".env")
 backchannel.install()  # "okay"/"haan" while she talks must not stop her (agent/backchannel.py)
@@ -76,7 +76,19 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_usage)
 
     await session.start(room=ctx.room, agent=Receptionist(language))
+    if vocabulary.enabled():  # E9: per-clinic names as STT keyterms, loaded without blocking
+        keyterms = asyncio.create_task(vocabulary.clinic_keyterms())
+        keyterms.add_done_callback(lambda t: _apply_keyterms(session, t))
     session.generate_reply(instructions=prompts.GREETING[language])
+
+
+def _apply_keyterms(session: AgentSession, task: asyncio.Task[list[str]]) -> None:
+    if task.cancelled() or task.exception():
+        # Fail open: the call works without keyterms, names are just recognized less well.
+        logger.warning("STT keyterms not loaded: %s", task.exception())
+        return
+    session.update_options(keyterms=task.result())
+    logger.info("STT keyterms applied: %d terms", len(task.result()))
 
 
 if __name__ == "__main__":

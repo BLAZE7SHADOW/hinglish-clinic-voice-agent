@@ -167,4 +167,5 @@ def describe() -> dict[str, str]:
         f"{os.environ.get('AI_MODEL', 'gemini-3.6-flash')}",
         "tts": os.environ.get("TTS_PROVIDER", "cartesia"),
         "turn": os.environ.get("TURN_DETECTOR", "v1-mini"),
+        "stt_keyterms": os.environ.get("STT_KEYTERMS", "off"),
     }

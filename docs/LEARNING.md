@@ -719,44 +719,88 @@ filter.
 
 ---
 
-## 16. STT misheard "Sharma" as "Harmer" and "Sharpa"
+## 16. STT misheard "Sharma" as "Harmer" and "Sharpa": fixed with per-clinic keyterms (E9)
 
 **What happened.** Day 5, call 8: the caller said "Doctor Sharma" twice. Deepgram returned
-"Doctor, Harmer", then "doctor Sharpa". `find_slots` returned `doctor_not_found` both times.
-The LLM only recovered on the third try, by passing "Dr. Anil Sharma" itself.
+"Doctor, Harmer", then "doctor Sharpa". `find_slots` returned `doctor_not_found` both times. The
+LLM only recovered on the third try.
 
-**How it works.** STT picks the most likely word sequence for the sound it hears. "Sharma"
-isn't common in the English training data, so nearby English words ("Harmer") win, especially
-when the start of the word is soft. Our matcher needed an exact word match, so every mishearing
-became a dead end.
+**How it works.** STT picks the most likely word sequence for the sound. Indian surnames are
+rare in mostly-English training data, so nearby common words win ("Harmer"), or the name is
+dropped entirely ("I want to see doctor tomorrow").
 
-**Options.**
-1. **Fuzzy matching in code** against the real doctor list: no latency cost, works with any STT.
-2. **Deepgram `keyterm`** (nova-3 key-term prompting): tell STT which names to expect (Sharma,
-   Mehta, Iyer, Lotus Lane). It fixes the problem at the source, but it changes STT behaviour,
-   so it must be measured as its own experiment.
-3. Ask the caller to spell the name: a poor voice experience, and a last resort.
+**First attempt, and why it was wrong.**
+- **What I did:** fuzzy string matching in code, with a 0.65 similarity threshold.
+- **The flaw (the user caught it):** the threshold was picked from the two mishearings in our
+  own call. That's fitting a rule to two examples, not measuring it.
+- **Evidence it didn't generalise:** it also matched "Iyengar" to Iyer and "karma" to Sharma.
+  Plain character similarity knows nothing about how names *sound*.
+- **Outcome:** removed. Lesson: **test calls are evidence and regression cases, never the
+  tuning set.**
 
-**Chosen.** Option 1 now; option 2 later as its own measured experiment.
-- `fuzzy_match_doctor` (in `agent/schedule.py`) runs only when the exact match finds nothing.
-- It uses string similarity (difflib) with a 0.65 threshold. "Harmer" scores 0.67 and "Sharpa"
-  0.83 against "Sharma".
-- It refuses to guess when two names are about equally close.
-- A fuzzy guess is **never used silently.** `find_slots` adds "'Doctor Harmer' taken as
-  Dr. Anil Sharma" to `assumptions_to_confirm`, and the prompt already makes her confirm those
-  aloud.
+**Options (what production systems do).**
+1. **Custom vocabulary at the STT, built from the business's own records.** The production
+   standard: Deepgram keyterms, Google speech adaptation, Azure phrase lists.
+2. **Let the caller choose:** when the name doesn't match, list the clinic's doctors and ask.
+   This works for any clinic and can never pick the wrong doctor silently.
+3. Sound-based (phonetic) matching in code. Only worth adding if it's measured on a labelled
+   set and still confirmed aloud.
 
-**Verification.** New tests use the real mishearings, Indian spellings (Sarma, Metha, Kavitha),
-and words that must *not* match (doctor, tomorrow, Gupta, Mr Verma). All pass.
+**Chosen.** 1 and 2.
+- **Keyterms:** `agent/vocabulary.py` builds them from the DB (doctor full names, surnames, clinic
+  name) after the call starts. They're applied with the public `session.update_options(keyterms=...)`,
+  so the greeting isn't delayed, and the call works without them if the DB fails. Switched by
+  `STT_KEYTERMS`, and recorded in every turn's `providers` label.
+- **The prompt:** on `doctor_not_found` or `doctor_ambiguous`, ask which listed doctor they mean;
+  never pick one.
+
+**E9 measurement** (`scripts/name_stt_eval.py`, 2026-10-11). A synthetic A/B test that doesn't
+use our calls:
+- **Names:** 24 Indian surnames. 3 synthetic clinics, each with a random roster of 6 doctors.
+  The other 18 names are callers asking for doctors *not* on the roster.
+- **Audio:** 3 sentence templates, 2 TTS voices (Cartesia, Sarvam Indian English), browser
+  16 kHz and phone 8 kHz.
+- **STT:** Deepgram nova-3 en-IN, with and without that clinic's keyterms.
+
+| Channel | Keyterms | Roster names right | Off-roster names right | Off-roster turned into a roster name |
+|---|---|---|---|---|
+| browser | off | 75.2% (n=101) | 77.2% (n=281) | 0.0% |
+| browser | **on** | **99.0%** | 66.9% | 1.8% |
+| phone | off | 61.4% | 70.1% | 0.4% |
+| phone | **on** | **99.0%** | **39.1%** | **5.0%** |
+
+**What it means.**
+- **The gain is large:** for the clinic's own doctors (almost every real call), recognition
+  goes from 75% to 99% in the browser, and from 61% to 99% on phone audio.
+- **The cost is real too:**
+  - **Names not on the roster get worse**, especially on the phone (70% → 39%). Often the name
+    is dropped entirely, which is harmless: she asks "which doctor?".
+  - **Sometimes a non-roster name becomes a roster name** ("Nair" → "Iyer"): 1.8% in the
+    browser, 5% on the phone. This is the dangerous case.
+- **Decision:** turn keyterms on, because the benefit is on the common case. The risk is
+  covered by a rule that's already required: every slot answer names the doctor, and every
+  booking reads back doctor, date and time before writing. So a hijacked name is heard and
+  corrected, never silently booked.
+- **Re-measure in week 4** on real phone audio. If the hijack rate holds at 5%, try fewer
+  keyterms (surnames only), or ask a confirming question when the doctor came from a fuzzy
+  context.
+
+**Limits of this measurement.**
+- TTS voices are cleaner than real callers.
+- It used the prerecorded API, while live calls stream.
+- 19 Cartesia sentences couldn't be rendered (the Cartesia account returned 402 Payment
+  Required), so Sarvam's voice is over-represented.
+- Use these numbers to rank the options. A short live check confirms them.
 
 **In industry.**
-- **Production systems use both layers:** custom vocabulary or boosting at the STT (Deepgram
-  keyterms, Google speech adaptation, Azure phrase lists) *and* fuzzy or phonetic matching
-  against the database (Soundex/Metaphone, or edit distance).
-- **The guess is always confirmed:** "Dr. Sharma, right?" A wrong doctor is worse than a
-  re-ask.
-- **Indian names, places and Hinglish are known STT weak spots,** which is why
-  India-specialised STT (Sarvam) and vocabulary lists matter for this market.
+- **Custom vocabulary is the main lever for names,** with the vocabulary built per tenant from
+  their own data (contacts, products, staff). Fuzzy or phonetic matching is a second layer,
+  used only with confirmation, and only after it's measured.
+- **Teams measure "boosting" for both effects:** recall on the boosted terms *and* false
+  substitutions on everything else. Over-boosting a vocabulary is a well-known failure, and the
+  table above shows it.
+- **Confirmation turns for critical entities** (names, dates, amounts) are standard in voice
+  booking and payments flows. They make STT errors recoverable.
 
 ---
 

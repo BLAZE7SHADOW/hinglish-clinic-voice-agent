@@ -98,7 +98,10 @@ Measured (row in `LATENCY_LOG.md`; DB re-seeded for today):
 
 Built after the run (103 tests pass):
 - **Backchannel filter** (`agent/backchannel.py`, LEARNING #15): "okay", "haan", "hmm" while she talks no longer stop her. "Wait", "ruko" and "sorry…" still do.
-- **Fuzzy doctor matching** (LEARNING #16): STT's "Harmer" or "Sharpa" maps to Dr. Sharma, and she confirms the guess aloud.
+- **Fuzzy doctor matching: added, then removed.** The threshold was fitted to our own two mishearings; the user rejected it as not production-grade. Replaced by:
+  - **Per-clinic STT keyterms** from the DB (`agent/vocabulary.py`, `STT_KEYTERMS=on`).
+  - A **prompt rule** to ask which listed doctor when the name doesn't match.
+  - **E9 results** (`scripts/name_stt_eval.py`): the clinic's own names went from 75% to 99% correct (browser) and from 61% to 99% (phone). Names not on the roster got worse, and on phone audio 5% became a roster name; the read-back confirmation covers that (LEARNING #16).
 - **Fallback providers** (LEARNING #17):
   - Chains: STT Deepgram → Sarvam, LLM Gemini 3.6 Flash → 2.5 Flash, TTS Cartesia → Sarvam.
   - The chaos test found a bug: Gemini rejects deadlines under 10 s, which would have failed every call. Fixed, and re-tested.
@@ -106,7 +109,8 @@ Built after the run (103 tests pass):
 
 Known follow-ups:
 - **Week 2:** when a read-back confirmation is pending, "yes", "haan" and "ji" must not be treated as backchannels.
-- **Experiment:** Deepgram `keyterm` for doctor names, measured on its own.
+- **Week 4:** re-measure keyterms on real phone audio (the 5% hijack rate).
+- **Cartesia returned 402 Payment Required during E9:** top up credits or set `TTS_PROVIDER=sarvam`. Until then, live calls fail over to Sarvam's voice.
 - **E8:** BVC noise cancellation, quiet room vs TV in the background.
 - **Week 3:** a filler line during tool calls; E1 (a faster LLM).
 

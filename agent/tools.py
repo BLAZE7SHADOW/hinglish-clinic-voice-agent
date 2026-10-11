@@ -29,7 +29,6 @@ from agent.schedule import (
     fmt_fee,
     fmt_slot,
     free_slots,
-    fuzzy_match_doctor,
     match_doctors,
 )
 
@@ -58,7 +57,7 @@ async def clinic_info(context: RunContext, topic: Topic) -> str:
     """
     try:
         if topic in ("fees", "doctors"):
-            doctors = await _doctors()
+            doctors = await load_doctors()
             facts = [
                 {"doctor": d.full_name, "specialty": d.specialty}
                 | ({"consultation_fee": fmt_fee(d.fee_paise)} if topic == "fees" else {})
@@ -92,11 +91,8 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
     now = datetime.now(CLINIC_TZ)
     w = resolve(when, now)
     try:
-        doctors = await _doctors()
+        doctors = await load_doctors()
         matches = match_doctors(doctor, doctors)
-        guessed = None if matches else fuzzy_match_doctor(doctor, doctors)
-        if guessed:
-            matches = [guessed]
         if len(matches) != 1:
             return json.dumps(
                 {
@@ -122,8 +118,7 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
         "doctor": d.full_name,
         "specialty": d.specialty,
         "when_understood": w.description,
-        "assumptions_to_confirm": w.assumptions
-        + ([f"'{doctor}' taken as {d.full_name} (name may be misheard)"] if guessed else []),
+        "assumptions_to_confirm": w.assumptions,
     }
     if w.exact_time:
         result["requested_time_free"] = w.exact_time in set(
@@ -169,7 +164,7 @@ async def find_slots(context: RunContext, doctor: str, when: str) -> str:
 _doctors_cache: tuple[float, list[Doctor]] | None = None
 
 
-async def _doctors() -> list[Doctor]:
+async def load_doctors() -> list[Doctor]:
     global _doctors_cache
     if _doctors_cache and time.monotonic() - _doctors_cache[0] < DOCTORS_CACHE_S:
         return _doctors_cache[1]
