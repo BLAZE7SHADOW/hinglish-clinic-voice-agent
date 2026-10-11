@@ -49,7 +49,24 @@ def is_backchannel(text: str) -> bool:
 
 def _agent_turn_active(activity: AgentActivity) -> bool:
     speech = activity._current_speech
-    return speech is not None and not speech.interrupted and speech.allow_interruptions
+    return (
+        speech is not None
+        and not speech.interrupted
+        and speech.allow_interruptions
+        and not _awaiting_yes(activity)
+    )
+
+
+def _awaiting_yes(activity: AgentActivity) -> bool:
+    """A read-back is waiting for an answer: "haan" is the answer then, never a backchannel.
+
+    Letting it through may cut the read-back short; then agent/confirm.py refuses the write
+    (the caller may not have heard the time), and the agent reads it back again in full.
+    """
+    try:
+        return bool(getattr(activity.session.userdata, "awaiting_yes", False))
+    except ValueError:  # no userdata on this session
+        return False
 
 
 _original_on_final_transcript = AgentActivity.on_final_transcript

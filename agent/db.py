@@ -1,7 +1,11 @@
-"""Postgres access: connection settings from DATABASE_URL, a per-process pool, timed reads."""
+"""Postgres access: connection settings from DATABASE_URL, a per-process pool, timed reads
+and writes.
+"""
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from urllib.parse import unquote
 
 import asyncpg
@@ -37,6 +41,7 @@ _pool: asyncpg.Pool | None = None
 _pool_lock: asyncio.Lock | None = None
 
 QUERY_TIMEOUT_S = 2.0  # below what a caller tolerates in silence (design §9)
+WRITE_TIMEOUT_S = 3.0  # a whole write transaction: hold, confirm, event row
 READ_RETRY_BACKOFF_S = 0.2
 
 
@@ -46,6 +51,7 @@ async def get_pool():
         _pool_lock = asyncio.Lock()
     async with _pool_lock:
         if _pool is None:
+            assert_safe_target()
             _pool = await asyncpg.create_pool(
                 min_size=3, max_size=3, **connect_kwargs(os.environ["DATABASE_URL"])
             )
@@ -62,3 +68,35 @@ async def read(query: str, *args):
             if attempt == 2:
                 raise
             await asyncio.sleep(READ_RETRY_BACKOFF_S)
+
+
+@asynccontextmanager
+async def transaction() -> AsyncIterator[asyncpg.Connection]:
+    """One write transaction, never retried here (design §9: writes never retry blindly).
+
+    The caller wraps it in `asyncio.timeout(WRITE_TIMEOUT_S)`. A timeout leaves the outcome
+    unknown: the write may have committed. Retry only with the same idempotency key, which
+    returns the existing row instead of writing a second one (design §16.3).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        yield conn
+
+
+class UnsafeTarget(RuntimeError):
+    """An eval tried to use a database that isn't the eval sandbox."""
+
+
+def assert_safe_target() -> None:
+    """Evals never touch real systems (design §16.2): a hard switch, checked on every connect.
+
+    With EVAL_MODE=1 the only allowed database is EVAL_DATABASE_URL, and it must differ from the
+    one in .env's DATABASE_URL (the runner swaps it in before anything connects).
+    """
+    if os.environ.get("EVAL_MODE") != "1":
+        return
+    eval_url = os.environ.get("EVAL_DATABASE_URL")
+    if not eval_url or os.environ.get("DATABASE_URL") != eval_url:
+        raise UnsafeTarget("EVAL_MODE=1 needs DATABASE_URL to be EVAL_DATABASE_URL")
+    if eval_url == os.environ.get("REAL_DATABASE_URL"):
+        raise UnsafeTarget("EVAL_DATABASE_URL is the real database")

@@ -30,6 +30,13 @@ logger = logging.getLogger("modes")
 TOOL_ACTIONS: list[tuple[llm.FunctionTool, Action]] = [
     (tools.clinic_info, Action.READ_CLINIC_INFO),
     (tools.find_slots, Action.READ_SLOTS),
+    (tools.verify_caller, Action.VERIFY_CALLER),
+    (tools.my_bookings, Action.READ_OWN_BOOKING),
+    (tools.hold_slot, Action.HOLD_SLOT),
+    (tools.confirm_booking, Action.CREATE_BOOKING),
+    (tools.reschedule_booking, Action.RESCHEDULE_BOOKING),
+    (tools.cancel_booking, Action.CANCEL_BOOKING),
+    (tools.request_callback, Action.REQUEST_CALLBACK),
 ]
 
 

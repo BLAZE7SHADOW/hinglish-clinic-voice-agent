@@ -65,10 +65,12 @@ def test_patched_framework_methods_still_exist():
         assert name in inspect.getsource(AgentActivity.__init__)
     for name in ("_start_false_interruption_timer", "_cancel_preemptive_generation"):
         assert callable(getattr(AgentActivity, name))
+    assert isinstance(AgentActivity.session, property)  # read for the call state
 
 
 class FakeActivity:
-    def __init__(self, *, speaking_agent: bool, paused: bool = False):
+    def __init__(self, *, speaking_agent: bool, paused: bool = False, awaiting_yes=False):
+        self.session = SimpleNamespace(userdata=SimpleNamespace(awaiting_yes=awaiting_yes))
         self._current_speech = (
             SimpleNamespace(interrupted=False, allow_interruptions=True) if speaking_agent else None
         )
@@ -117,3 +119,16 @@ def test_real_words_and_idle_agent_go_to_livekit(monkeypatch):
     idle = FakeActivity(speaking_agent=False)
     backchannel._on_end_of_turn(idle, SimpleNamespace(new_transcript="Okay."))
     assert len(calls) == 3
+
+
+def test_yes_words_are_answers_while_a_read_back_waits(monkeypatch):
+    # "Shall I book Monday five PM?" ... "haan": that is the answer, not a backchannel.
+    calls = []
+    monkeypatch.setattr(backchannel, "_original_on_end_of_turn", lambda s, i: calls.append(i))
+    monkeypatch.setattr(
+        backchannel, "_original_on_final_transcript", lambda s, ev, speaking: calls.append(ev)
+    )
+    act = FakeActivity(speaking_agent=True, awaiting_yes=True)
+    backchannel._on_final_transcript(act, final("Haan."), speaking=False)
+    backchannel._on_end_of_turn(act, SimpleNamespace(new_transcript="Haan."))
+    assert len(calls) == 2

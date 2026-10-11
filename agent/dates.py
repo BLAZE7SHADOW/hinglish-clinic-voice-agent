@@ -10,6 +10,7 @@ Covered: aaj/today, kal/tomorrow, parson/day after tomorrow, weekdays in English
 number words (English and Hindi) including saade/sawa/paune/dedh/dhai.
 """
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -123,6 +124,18 @@ FRACTION_WORDS = {"dedh": (1, 30), "dhai": (2, 30), "dhaai": (2, 30)}  # whole t
 MODIFIERS = {"saade": 30, "sade": 30, "sawa": 15, "sava": 15, "paune": -15, "pone": -15}
 
 _NUM = r"(\d{1,2}|" + "|".join(NUMBER_WORDS) + r")"
+
+
+def now() -> datetime:
+    """The clinic's current time. Evals freeze it so a scenario sees the same schedule every run.
+
+    AGENT_FAKE_NOW is honoured only with EVAL_MODE=1, so a stray value can't move a real call's
+    "kal" to another day.
+    """
+    fake = os.environ.get("AGENT_FAKE_NOW")
+    if fake and os.environ.get("EVAL_MODE") == "1":
+        return datetime.fromisoformat(fake).astimezone(CLINIC_TZ)
+    return datetime.now(CLINIC_TZ)
 
 
 @dataclass(frozen=True)
@@ -280,3 +293,40 @@ def _fmt_time(t: time) -> str:
 
 def _fmt_hour(h: int) -> str:
     return "midnight" if h in (0, 24) else _fmt_time(time(h))
+
+
+_MONTH_WORDS = MONTHS | {m[:3]: i for m, i in MONTHS.items()} | {"sept": 9}
+_DOB_NUMERIC = re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b")  # Indian order: D/M/Y
+_DOB_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
+MAX_AGE_YEARS = 120
+
+
+def parse_birth_date(text: str, today: date) -> date | None:
+    """A date of birth from the caller's words, or None if it isn't clear.
+
+    Accepts "15 August 1990", "August 15th, 1990", "15th of Aug 1990", "15/08/1990" (day first,
+    as Indians write it) and "1990-08-15". Needs a four-digit year: "15 August 90" is ambiguous
+    and returns None, so the agent asks again instead of guessing a century.
+    """
+    t = text.lower()
+    day = month = year = None
+    if m := _DOB_ISO.search(t):
+        year, month, day = (int(g) for g in m.groups())
+    elif m := _DOB_NUMERIC.search(t):
+        day, month, year = (int(g) for g in m.groups())
+    else:
+        words = re.findall(r"[a-z]+|\d+", t)
+        months = [_MONTH_WORDS[w] for w in words if w in _MONTH_WORDS]
+        years = [int(w) for w in words if w.isdigit() and len(w) == 4]
+        days = [int(w) for w in words if w.isdigit() and len(w) <= 2]
+        if len(months) == 1 and len(years) == 1 and len(days) == 1:
+            day, month, year = days[0], months[0], years[0]
+    if day is None:
+        return None
+    try:
+        born = date(year, month, day)
+    except ValueError:
+        return None
+    if born > today or born.year < today.year - MAX_AGE_YEARS:
+        return None
+    return born

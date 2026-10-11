@@ -6,6 +6,7 @@ import pytest
 from agent import modes, prompts, tools
 from agent.modes import Receptionist, switch_mode, tools_for
 from agent.state import ALLOWED, CallState, Mode
+from agent.tools import read
 
 
 def context(state: CallState, agent: Receptionist | None = None):
@@ -23,8 +24,8 @@ def test_each_mode_exposes_only_the_tools_it_allows(mode):
         assert (tool in tools_for(mode)) == (action in ALLOWED[mode])
 
 
-def test_handoff_has_no_tools_and_no_way_out():
-    assert tools_for(Mode.HANDOFF) == []
+def test_handoff_can_only_request_a_callback_and_has_no_way_out():
+    assert names(tools_for(Mode.HANDOFF)) == {"request_callback"}
     assert "switch_mode" not in prompts.instructions("en", Mode.HANDOFF)
 
 
@@ -37,18 +38,24 @@ async def test_switch_mode_swaps_instructions_and_tools_in_place():
 
     assert out == {"mode": "cancelling"} and state.mode == Mode.CANCELLING
     assert agent.applied_mode == Mode.CANCELLING
-    assert names(agent.tools) == {"switch_mode"}
+    assert names(agent.tools) == {
+        "verify_caller",
+        "my_bookings",
+        "cancel_booking",
+        "request_callback",
+        "switch_mode",
+    }
     assert agent.instructions == prompts.instructions("en", Mode.CANCELLING)
 
 
-async def test_switch_out_of_handoff_is_refused_and_tools_stay_empty():
+async def test_switch_out_of_handoff_is_refused_and_tools_stay_the_same():
     state = CallState(call_id="AJ_test", mode=Mode.HANDOFF)
     agent = Receptionist("en", Mode.HANDOFF)
 
     out = json.loads(await switch_mode(context(state, agent), mode="booking"))
 
     assert out["error"] == "not_allowed"
-    assert state.mode == Mode.HANDOFF and agent.tools == []
+    assert state.mode == Mode.HANDOFF and names(agent.tools) == {"request_callback"}
 
 
 async def test_guard_refuses_a_stale_tool_before_touching_the_db(monkeypatch):
@@ -57,7 +64,7 @@ async def test_guard_refuses_a_stale_tool_before_touching_the_db(monkeypatch):
     async def no_db(*a, **kw):
         raise AssertionError("the DB must not be read for a refused call")
 
-    monkeypatch.setattr(tools.db, "read", no_db)
+    monkeypatch.setattr(read.db, "read", no_db)
     state = CallState(call_id="AJ_test", mode=Mode.CANCELLING)
 
     out = json.loads(await tools.find_slots(context(state), doctor="Dr. Sharma", when="kal"))

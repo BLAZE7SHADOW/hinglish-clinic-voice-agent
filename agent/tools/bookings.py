@@ -1,0 +1,442 @@
+"""Booking writes: hold, confirm, reschedule, cancel (design §9, "Preventing double bookings").
+
+The sequence for a new booking:
+1. hold_slot: the caller chose one of the times find_slots offered. A `held` row with a short
+   expiry goes in, so another caller can't take the time while this one confirms. The partial
+   unique index on (doctor, start) for held and confirmed rows is the final guard: two holds on
+   one slot can't both exist, whatever the application does.
+2. The agent reads back doctor, day and time. confirm_booking checks in code that the caller's
+   next turn was a clear yes to a read-back that played in full (agent/confirm.py).
+3. confirm_booking turns the held row into a confirmed one and records the event in the same
+   transaction, then reads the stored row back so the agent confirms what is stored, not what it
+   intended.
+
+Idempotency: a hold's key is `hold:<call id>:<doctor id>:<start>`, full length. Repeating a hold
+returns the same row; confirming updates that row, so repeating a confirm can't create a second
+booking. Writes never retry on their own. A timeout returns "outcome unknown", and the agent
+calls the same tool again, which is safe for the reasons above (design §16.3).
+"""
+
+import asyncio
+import json
+import logging
+import re
+
+import asyncpg
+from livekit.agents import RunContext, function_tool
+
+from agent import db
+from agent.confirm import check_yes
+from agent.dates import CLINIC_TZ, now, parse_birth_date
+from agent.identity import normalize_name, parse_phone
+from agent.schedule import fmt_slot
+from agent.state import Action, CallState, Slot, Verification, record_verification
+from agent.tools.common import (
+    DB_ERRORS,
+    UNAVAILABLE,
+    UNCERTAIN,
+    clinic_id,
+    emit,
+    error,
+    guard,
+    turns,
+)
+
+logger = logging.getLogger("tools")
+
+# Long enough to read back and hear "yes", short enough that an abandoned call doesn't block the
+# slot for long. Holds are also released when the call ends. Measure expiry rate, then adjust.
+HOLD_MINUTES = 3
+
+
+def _label_key(text: str) -> str:
+    """Compare time labels loosely on format only: "5:00 PM" = "5 pm" = "5 P.M."."""
+    return re.sub(r"[\s.]|:00", "", text.lower())
+
+
+def _day(dt) -> str:
+    return dt.astimezone(CLINIC_TZ).strftime("%A %-d %B")
+
+
+@function_tool
+async def hold_slot(context: RunContext[CallState], slot: str) -> str:
+    """Hold the time the caller chose so nobody else takes it while you confirm. Not a booking.
+
+    Args:
+        slot: One of the times from your latest find_slots result, copied exactly, e.g.
+            "5:30 PM" or "Monday 12 October 5 PM".
+    """
+    if refusal := guard(context, Action.HOLD_SLOT):
+        return refusal
+    state = context.userdata
+    chosen = next((o for o in state.offered if _label_key(o.label) == _label_key(slot)), None)
+    if chosen is None:
+        return error(
+            "slot_not_offered",
+            offered=[o.label for o in state.offered],
+            say="Only a time from find_slots can be held. Call find_slots first if needed.",
+        )
+    previous = state.slot.hold_id if state.slot else None
+    key = f"hold:{state.call_id}:{chosen.doctor_id}:{chosen.starts_at.isoformat()}"
+    try:
+        cid = await clinic_id()
+        async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
+            if previous is not None:  # the caller changed their mind: free the old time
+                await _release(conn, previous)
+            # An expired hold still sits in the unique index; clear it so the time can be taken.
+            await conn.execute(
+                "delete from bookings where doctor_id = $1 and starts_at = $2"
+                " and status = 'held' and hold_expires_at <= now()",
+                chosen.doctor_id,
+                chosen.starts_at,
+            )
+            hold_id = await conn.fetchval(
+                "insert into bookings (clinic_id, doctor_id, starts_at, ends_at, status,"
+                " hold_expires_at, idempotency_key, created_by, call_id)"
+                " values ($1, $2, $3, $4, 'held', now() + make_interval(mins => $5), $6,"
+                " 'agent', $7)"
+                " on conflict (idempotency_key) do update set status = 'held',"
+                " hold_expires_at = excluded.hold_expires_at, cancelled_at = null"
+                " where bookings.status in ('held', 'cancelled')"
+                " returning id",
+                cid,
+                chosen.doctor_id,
+                chosen.starts_at,
+                chosen.ends_at,
+                HOLD_MINUTES,
+                key,
+                state.call_id,
+            )
+            if hold_id is None:  # this call already booked exactly this time
+                return error("already_booked_on_this_call")
+            await emit(
+                conn,
+                state.call_id,
+                "slot_held",
+                booking_id=hold_id,
+                doctor_id=chosen.doctor_id,
+                starts_at=chosen.starts_at,
+            )
+    except asyncpg.UniqueViolationError:
+        state.offered = [o for o in state.offered if o is not chosen]
+        return error(
+            "slot_taken",
+            say="Someone else just took that time. Say so and offer another free time.",
+        )
+    except TimeoutError:
+        logger.warning("hold_slot timed out; outcome unknown")
+        return UNCERTAIN
+    except DB_ERRORS + (LookupError,):
+        logger.exception("hold_slot failed")
+        return UNAVAILABLE
+
+    state.slot = Slot(
+        doctor_id=chosen.doctor_id,
+        doctor_name=chosen.doctor_name,
+        starts_at=chosen.starts_at,
+        hold_id=hold_id,
+        held_after_user_turn=turns(context),
+    )
+    return json.dumps(
+        {
+            "held": True,
+            "doctor": chosen.doctor_name,
+            "day": _day(chosen.starts_at),
+            "time": fmt_slot(chosen.starts_at),
+            "hold_minutes": HOLD_MINUTES,
+            "next": "Read back doctor, day and time and ask for a clear yes.",
+        }
+    )
+
+
+def _read_back_given(context: RunContext[CallState], after_user_turn: int) -> str | None:
+    """None if the caller's latest turn is a clear yes to a full read-back, else the refusal."""
+    result = check_yes(context.session.history, after_user_turn=after_user_turn)
+    if result.ok:
+        return None
+    logger.info("write refused: %s", result.reason)
+    return error("not_confirmed", reason=result.reason)
+
+
+@function_tool
+async def confirm_booking(
+    context: RunContext[CallState],
+    patient_name: str = "",
+    phone: str = "",
+    birth_date: str = "",
+) -> str:
+    """Book the held time. Only after reading back doctor, day and time and hearing a clear yes.
+
+    Args:
+        patient_name: The patient's full name as the caller said it. "" if already verified.
+        phone: The patient's phone number as the caller said it. "" if already verified.
+        birth_date: The patient's date of birth in the caller's own words. "" if verified.
+    """
+    state = context.userdata
+    slot = state.slot
+    if slot is None or slot.hold_id is None:
+        return error("no_slot_held", say="Hold a time with hold_slot first.")
+    if not slot.read_back_confirmed:
+        if refusal := _read_back_given(context, slot.held_after_user_turn):
+            return refusal
+        slot.read_back_confirmed = True  # the yes covers this hold, even if details follow
+    if refusal := guard(context, Action.CREATE_BOOKING):
+        return refusal
+
+    details = None
+    if state.verification != Verification.VERIFIED:
+        number = parse_phone(phone)
+        born = parse_birth_date(birth_date, now().date()) if birth_date else None
+        missing = [
+            field
+            for field, value in (
+                ("name", patient_name.strip()),
+                ("phone", number),
+                ("birth_date", born),
+            )
+            if not value
+        ]
+        if missing:
+            return error(
+                "need_patient_details",
+                missing=missing,
+                say="Ask for these, then call confirm_booking again. The time stays held.",
+            )
+        details = (patient_name.strip(), number, born)
+
+    try:
+        cid = await clinic_id()
+        async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
+            status = await conn.fetchval(
+                "select status from bookings where id = $1 for update", slot.hold_id
+            )
+            if status is None or status == "cancelled":
+                state.slot = None
+                return error("hold_lost", say="Say the time was released; check times again.")
+            if status == "held":
+                patient_id = state.patient_id if details is None else None
+                if details is not None:
+                    patient_id, existing = await _find_or_add_patient(conn, cid, *details)
+                    if patient_id is None:
+                        return error(
+                            "details_mismatch",
+                            say="Say the details don't match the clinic's records and ask them "
+                            "to check the date of birth, or offer a callback.",
+                        )
+                    if existing:  # phone, name and birth date all matched: that is verification
+                        record_verification(state, matched_patient_id=patient_id)
+                    else:
+                        state.patient_id = patient_id
+                await conn.execute(
+                    "update bookings set status = 'confirmed', patient_id = $2,"
+                    " hold_expires_at = null where id = $1",
+                    slot.hold_id,
+                    patient_id,
+                )
+                await emit(
+                    conn,
+                    state.call_id,
+                    "booking_created",
+                    booking_id=slot.hold_id,
+                    patient_id=patient_id,
+                    doctor_id=slot.doctor_id,
+                    starts_at=slot.starts_at,
+                )
+            # status == "confirmed": a repeat of a confirm that already went through. Same row.
+            stored = await _stored(conn, slot.hold_id)
+        return _done(state, slot.hold_id, "booked", stored)
+    except TimeoutError:
+        logger.warning("confirm_booking timed out; outcome unknown")
+        return UNCERTAIN
+    except DB_ERRORS + (LookupError,):
+        logger.exception("confirm_booking failed")
+        return UNAVAILABLE
+
+
+@function_tool
+async def reschedule_booking(context: RunContext[CallState], ref: int) -> str:
+    """Move the caller's booking to the held time. Only after reading back the change and
+    hearing a clear yes.
+
+    Args:
+        ref: The ref of the booking to move, from my_bookings.
+    """
+    state = context.userdata
+    slot = state.slot
+    old_id = state.listed_bookings.get(ref)
+    if old_id is None:
+        return error("unknown_ref", say="Call my_bookings and use one of its refs.")
+    if slot is None or slot.hold_id is None:
+        return error("no_slot_held", say="Hold the new time with hold_slot first.")
+    if not slot.read_back_confirmed:
+        if refusal := _read_back_given(context, slot.held_after_user_turn):
+            return refusal
+        slot.read_back_confirmed = True
+    if refusal := guard(context, Action.RESCHEDULE_BOOKING):
+        return refusal
+    try:
+        async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
+            old = await conn.fetchval(
+                "select status from bookings where id = $1 and patient_id = $2 for update",
+                old_id,
+                state.patient_id,
+            )
+            new = await conn.fetchrow(
+                "select status, replaces_booking_id from bookings where id = $1 for update",
+                slot.hold_id,
+            )
+            repeat = new and new["status"] == "confirmed" and new["replaces_booking_id"] == old_id
+            if not repeat:
+                if old != "confirmed":
+                    return error("booking_not_active", say="Say that booking is no longer active.")
+                if new is None or new["status"] != "held":
+                    state.slot = None
+                    return error("hold_lost", say="Say the new time was released; check again.")
+                await conn.execute(
+                    "update bookings set status = 'confirmed', patient_id = $2,"
+                    " hold_expires_at = null, replaces_booking_id = $3 where id = $1",
+                    slot.hold_id,
+                    state.patient_id,
+                    old_id,
+                )
+                await conn.execute(
+                    "update bookings set status = 'cancelled', cancelled_at = now() where id = $1",
+                    old_id,
+                )
+                await emit(
+                    conn,
+                    state.call_id,
+                    "booking_rescheduled",
+                    booking_id=slot.hold_id,
+                    replaces_booking_id=old_id,
+                    patient_id=state.patient_id,
+                )
+            stored = await _stored(conn, slot.hold_id)
+        state.listed_bookings.pop(ref, None)
+        return _done(state, slot.hold_id, "rescheduled", stored)
+    except TimeoutError:
+        logger.warning("reschedule_booking timed out; outcome unknown")
+        return UNCERTAIN
+    except DB_ERRORS:
+        logger.exception("reschedule_booking failed")
+        return UNAVAILABLE
+
+
+@function_tool
+async def cancel_booking(context: RunContext[CallState], ref: int) -> str:
+    """Cancel one of the caller's bookings. Only after naming it (doctor, day, time) and hearing
+    a clear yes.
+
+    Args:
+        ref: The ref of the booking to cancel, from my_bookings.
+    """
+    if refusal := guard(context, Action.CANCEL_BOOKING):
+        return refusal
+    state = context.userdata
+    booking_id = state.listed_bookings.get(ref)
+    if booking_id is None:
+        return error("unknown_ref", say="Call my_bookings and use one of its refs.")
+    if refusal := _read_back_given(context, state.bookings_listed_after_user_turn):
+        return refusal
+    try:
+        async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
+            status = await conn.fetchval(
+                "select status from bookings where id = $1 and patient_id = $2 for update",
+                booking_id,
+                state.patient_id,
+            )
+            if status == "confirmed":
+                await conn.execute(
+                    "update bookings set status = 'cancelled', cancelled_at = now() where id = $1",
+                    booking_id,
+                )
+                await emit(
+                    conn,
+                    state.call_id,
+                    "booking_cancelled",
+                    booking_id=booking_id,
+                    patient_id=state.patient_id,
+                )
+            elif status != "cancelled":  # cancelled already = a repeat of this same cancel
+                return error("booking_not_active", say="Say that booking is no longer active.")
+            stored = await _stored(conn, booking_id)
+        state.listed_bookings.pop(ref, None)
+        return _done(state, booking_id, "cancelled", stored)
+    except TimeoutError:
+        logger.warning("cancel_booking timed out; outcome unknown")
+        return UNCERTAIN
+    except DB_ERRORS:
+        logger.exception("cancel_booking failed")
+        return UNAVAILABLE
+
+
+async def _find_or_add_patient(conn, cid: int, name: str, phone: str, born) -> tuple:
+    """(patient id, existed) for these details. (None, True) if the name is on file for this
+    phone with a different date of birth: don't book against someone else's record.
+    """
+    rows = await conn.fetch(
+        "select id, full_name, birth_date from patients where clinic_id = $1 and phone = $2",
+        cid,
+        phone,
+    )
+    same_name = [r for r in rows if normalize_name(r["full_name"]) == normalize_name(name)]
+    if same_name:
+        r = same_name[0]
+        return (r["id"], True) if r["birth_date"] == born else (None, True)
+    new_id = await conn.fetchval(
+        "insert into patients (clinic_id, full_name, phone, birth_date) values ($1, $2, $3, $4)"
+        " returning id",
+        cid,
+        name,
+        phone,
+        born,
+    )
+    return new_id, False
+
+
+async def _stored(conn, booking_id: int):
+    """The booking as stored, read in the write's own transaction (design §9, step 4): the
+    agent confirms what the database holds, not what it meant to write.
+    """
+    return await conn.fetchrow(
+        "select b.status, d.full_name, b.starts_at from bookings b"
+        " join doctors d on d.id = b.doctor_id where b.id = $1",
+        booking_id,
+    )
+
+
+def _done(state: CallState, booking_id: int, outcome: str, r) -> str:
+    state.slot, state.booking_id = None, booking_id
+    return json.dumps(
+        {
+            outcome: True,
+            "status": r["status"],
+            "doctor": r["full_name"],
+            "day": _day(r["starts_at"]),
+            "time": fmt_slot(r["starts_at"]),
+            "say": "Confirm to the caller from these stored details.",
+        }
+    )
+
+
+async def _release(conn, hold_id: int) -> None:
+    await conn.execute(
+        "update bookings set status = 'cancelled', cancelled_at = now()"
+        " where id = $1 and status = 'held'",
+        hold_id,
+    )
+
+
+async def release_call_holds(call_id: str) -> None:
+    """At call end: free any time this call still holds, instead of waiting for expiry."""
+    try:
+        async with asyncio.timeout(db.WRITE_TIMEOUT_S), db.transaction() as conn:
+            released = await conn.fetchval(
+                "with r as (update bookings set status = 'cancelled', cancelled_at = now()"
+                " where call_id = $1 and status = 'held' returning 1) select count(*) from r",
+                call_id,
+            )
+        if released:
+            logger.info("released %d hold(s) at call end", released)
+    except DB_ERRORS:
+        logger.exception("releasing holds failed; they expire on their own")

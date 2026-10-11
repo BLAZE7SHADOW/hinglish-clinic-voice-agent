@@ -13,7 +13,7 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import backchannel, db, prompts, providers, telemetry, vocabulary
+from agent import backchannel, db, prompts, providers, telemetry, tools, vocabulary
 from agent.modes import Receptionist
 from agent.state import CallState
 
@@ -69,6 +69,11 @@ async def entrypoint(ctx: JobContext) -> None:
         telemetry.write_usage(session, call_id=ctx.job.id)
 
     ctx.add_shutdown_callback(_usage)
+
+    async def _release_holds() -> None:
+        await tools.release_call_holds(ctx.job.id)
+
+    ctx.add_shutdown_callback(_release_holds)
 
     await session.start(room=ctx.room, agent=Receptionist(language))
     if vocabulary.enabled():  # E9: per-clinic names as STT keyterms, loaded without blocking

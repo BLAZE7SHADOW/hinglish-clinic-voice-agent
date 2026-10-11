@@ -1,4 +1,4 @@
-"""Read-only tools for the call: clinic_info and find_slots (design §7.3).
+"""Read-only tools: clinic_info and find_slots (design §7.3).
 
 Rules applied here:
 - Typed inputs; `when` is the caller's own words, resolved in code (agent/dates.py). The model
@@ -10,21 +10,21 @@ Rules applied here:
   honest error for the agent to say, never a guess (design §9).
 - Every tool checks the typed call state first (`guard`), whatever the LLM asked for. The tool
   list per mode limits what the LLM sees; the guard is what actually enforces it (design §7.4).
+- find_slots records every time it offers in the call state. hold_slot accepts only those, so
+  the LLM can't hold a time it made up.
 """
 
 import asyncio
 import json
 import logging
-import os
 import time
 from datetime import datetime, timedelta
 from typing import Literal
 
-import asyncpg
 from livekit.agents import RunContext, function_tool
 
 from agent import db
-from agent.dates import CLINIC_TZ, PARTS_OF_DAY, resolve
+from agent.dates import CLINIC_TZ, PARTS_OF_DAY, now, resolve
 from agent.schedule import (
     Doctor,
     WorkingHours,
@@ -33,29 +33,18 @@ from agent.schedule import (
     free_slots,
     match_doctors,
 )
-from agent.state import Action, CallState, Refused, check
+from agent.state import Action, CallState, OfferedSlot
+from agent.tools.common import CLINIC_NAME, DB_ERRORS, UNAVAILABLE, guard
 
 logger = logging.getLogger("tools")
 
-CLINIC_NAME = os.environ.get("CLINIC_NAME", "Sharma Family Clinic")
 MAX_SLOTS_SPOKEN = 5  # a voice reply can't list twenty times
 NEXT_AVAILABLE_SEARCH_DAYS = 14
 DOCTORS_CACHE_S = 60  # doctors don't change mid-call; saves a DB round trip per tool call
 
-UNAVAILABLE = {
-    "error": "schedule_system_unavailable",
-    "say": "Say honestly that you can't check the schedule right now. Do not guess.",
-}
 
-
-def guard(context: RunContext[CallState], action: Action) -> str | None:
-    """None if `action` is allowed now, else the refusal for the LLM to act on."""
-    try:
-        check(context.userdata, action)
-    except Refused as e:
-        logger.warning("refused %s in %s mode: %s", action, context.userdata.mode, e)
-        return json.dumps({"error": "not_allowed", "reason": str(e)})
-    return None
+def fmt_day_slot(dt: datetime) -> str:
+    return f"{dt.astimezone(CLINIC_TZ).strftime('%A %-d %B')} {fmt_slot(dt)}"
 
 
 Topic = Literal["hours", "address", "phone", "services", "payment", "parking", "fees", "doctors"]
@@ -87,9 +76,9 @@ async def clinic_info(context: RunContext[CallState], topic: Topic) -> str:
                 topic,
             )
             facts = rows[0]["answer"] if rows else "No information on file for this topic."
-    except (TimeoutError, OSError, asyncpg.PostgresError):
+    except DB_ERRORS:
         logger.exception("clinic_info failed")
-        return json.dumps(UNAVAILABLE)
+        return UNAVAILABLE
     return json.dumps({"clinic_data": facts})
 
 
@@ -106,8 +95,8 @@ async def find_slots(context: RunContext[CallState], doctor: str, when: str) -> 
     """
     if refusal := guard(context, Action.READ_SLOTS):
         return refusal
-    now = datetime.now(CLINIC_TZ)
-    w = resolve(when, now)
+    current = now()
+    w = resolve(when, current)
     try:
         doctors = await load_doctors()
         matches = match_doctors(doctor, doctors)
@@ -122,15 +111,26 @@ async def find_slots(context: RunContext[CallState], doctor: str, when: str) -> 
                 }
             )
         d = matches[0]
-        search_end = max(w.end, now + timedelta(days=NEXT_AVAILABLE_SEARCH_DAYS))
+        search_end = max(w.end, current + timedelta(days=NEXT_AVAILABLE_SEARCH_DAYS))
         hours, days_off, taken = await _schedule(d.id, w.start, search_end)
-    except (TimeoutError, OSError, asyncpg.PostgresError):
+    except DB_ERRORS:
         logger.exception("find_slots failed")
-        return json.dumps(UNAVAILABLE)
+        return UNAVAILABLE
 
-    slots = free_slots(hours, days_off, taken, d.slot_minutes, w.start, w.end, now)
+    slots = free_slots(hours, days_off, taken, d.slot_minutes, w.start, w.end, current)
     multi_day = w.start.date() != (w.end - timedelta(minutes=1)).date()
-    label = (lambda s: f"{s.strftime('%A %-d %B')} {fmt_slot(s)}") if multi_day else fmt_slot
+    offered: list[OfferedSlot] = []
+
+    def offer(s: datetime, *, with_day: bool) -> str:
+        """The label the LLM sees for a free time, recorded so hold_slot can find it again."""
+        text = fmt_day_slot(s) if with_day else fmt_slot(s)
+        end = s + timedelta(minutes=d.slot_minutes)
+        offered.append(
+            OfferedSlot(
+                doctor_id=d.id, doctor_name=d.full_name, label=text, starts_at=s, ends_at=end
+            )
+        )
+        return text
 
     result: dict = {
         "doctor": d.full_name,
@@ -139,7 +139,7 @@ async def find_slots(context: RunContext[CallState], doctor: str, when: str) -> 
         "assumptions_to_confirm": w.assumptions,
     }
     if w.exact_time:
-        result["requested_time_free"] = w.exact_time in set(
+        requested_free = w.exact_time in set(
             free_slots(
                 hours,
                 days_off,
@@ -147,18 +147,26 @@ async def find_slots(context: RunContext[CallState], doctor: str, when: str) -> 
                 d.slot_minutes,
                 w.exact_time,
                 w.exact_time + timedelta(minutes=1),
-                now,
+                current,
             )
         )
+        result["requested_time_free"] = requested_free
+        if requested_free:
+            result["requested_time"] = offer(w.exact_time, with_day=False)
         day_start = w.exact_time.replace(hour=0, minute=0)
         same_day = free_slots(
-            hours, days_off, taken, d.slot_minutes, day_start, day_start + timedelta(days=1), now
+            hours,
+            days_off,
+            taken,
+            d.slot_minutes,
+            day_start,
+            day_start + timedelta(days=1),
+            current,
         )
-        result["nearest_free_that_day"] = [
-            fmt_slot(s) for s in sorted(same_day, key=lambda s: abs(s - w.exact_time))
-        ][:3]
+        nearest = sorted(same_day, key=lambda s: abs(s - w.exact_time))[:3]
+        result["nearest_free_that_day"] = [offer(s, with_day=False) for s in nearest]
     else:
-        result["free"] = [label(s) for s in slots[:MAX_SLOTS_SPOKEN]]
+        result["free"] = [offer(s, with_day=multi_day) for s in slots[:MAX_SLOTS_SPOKEN]]
         result["more_free_not_listed"] = max(0, len(slots) - MAX_SLOTS_SPOKEN)
     if not multi_day:
         day = w.start.date()
@@ -167,15 +175,15 @@ async def find_slots(context: RunContext[CallState], doctor: str, when: str) -> 
     nothing_that_day = not slots if not w.exact_time else not result["nearest_free_that_day"]
     if nothing_that_day:
         later_from = w.end if not w.exact_time else w.exact_time.replace(hour=23, minute=59)
-        later = free_slots(hours, days_off, taken, d.slot_minutes, later_from, search_end, now)
+        later = free_slots(hours, days_off, taken, d.slot_minutes, later_from, search_end, current)
         if w.exact_time:  # asked for 6 PM: offer times near 6 PM on later days first
             later = [s for s in later if abs(s.hour - w.exact_time.hour) <= 1] or later
         elif w.part:  # asked for evenings: offer evenings first
             lo, hi = PARTS_OF_DAY[w.part]
             later = [s for s in later if lo <= s.hour < hi] or later
-        result["next_free_after_that"] = [
-            f"{s.strftime('%A %-d %B')} {fmt_slot(s)}" for s in later[:3]
-        ]
+        result["next_free_after_that"] = [offer(s, with_day=True) for s in later[:3]]
+    # Replaced, not added to: the caller chooses from what they just heard.
+    context.userdata.offered = offered
     return json.dumps(result)
 
 

@@ -29,18 +29,32 @@ class Verification(StrEnum):
 class Action(StrEnum):
     READ_SLOTS = "read_slots"
     READ_CLINIC_INFO = "read_clinic_info"
+    VERIFY_CALLER = "verify_caller"
     READ_OWN_BOOKING = "read_own_booking"
+    HOLD_SLOT = "hold_slot"
     CREATE_BOOKING = "create_booking"
     RESCHEDULE_BOOKING = "reschedule_booking"
     CANCEL_BOOKING = "cancel_booking"
     REQUEST_CALLBACK = "request_callback"
 
 
+class OfferedSlot(BaseModel):
+    """A free time find_slots told the LLM about. Only these can be held (no invented times)."""
+
+    doctor_id: int
+    doctor_name: str
+    label: str  # exactly as the LLM saw it, e.g. "Monday 12 October 5:00 PM" or "5:00 PM"
+    starts_at: datetime
+    ends_at: datetime
+
+
 class Slot(BaseModel):
     doctor_id: int
     doctor_name: str
     starts_at: datetime
-    read_back_confirmed: bool = False  # caller said a clear "yes" to doctor, date and time
+    hold_id: int | None = None  # the `held` bookings row, once placed
+    held_after_user_turn: int = 0  # the caller's yes must come in a later turn than the hold
+    read_back_confirmed: bool = False  # set by code after a clear "yes" to the read-back
 
 
 class CallState(BaseModel):
@@ -48,11 +62,31 @@ class CallState(BaseModel):
     mode: Mode = Mode.GREETING
     verification: Verification = Verification.UNVERIFIED
     verification_attempts: int = 0
-    patient_id: int | None = None  # set only by successful verification
+    patient_id: int | None = None  # set only by successful verification or a new registration
+    offered: list[OfferedSlot] = Field(default_factory=list)  # latest find_slots result
     slot: Slot | None = None  # the slot under discussion
+    # The verified caller's upcoming bookings, by the short ref the LLM sees (1, 2, ...). Only
+    # these can be changed: the LLM never handles raw booking ids.
+    listed_bookings: dict[int, int] = Field(default_factory=dict)
+    bookings_listed_after_user_turn: int = 0
     booking_id: int | None = None  # the booking being changed (reschedule / cancel)
+    callback_requested: bool = False
     misunderstandings: int = 0  # repeated "sorry?" leads to handoff (design §7.4)
     history: list[str] = Field(default_factory=list)  # mode changes, for the event log
+
+    @property
+    def awaiting_yes(self) -> bool:
+        """A read-back is out and the caller's answer decides a write.
+
+        While this is true a "haan" or "yes" is an answer, not a backchannel (agent/backchannel.py).
+        """
+        slot_pending = (
+            self.slot is not None
+            and self.slot.hold_id is not None
+            and not self.slot.read_back_confirmed
+        )
+        cancel_pending = self.mode == Mode.CANCELLING and bool(self.listed_bookings)
+        return slot_pending or cancel_pending
 
 
 MAX_VERIFICATION_ATTEMPTS = 2
@@ -67,22 +101,29 @@ class Refused(Exception):
 ALLOWED: dict[Mode, set[Action]] = {
     Mode.GREETING: {Action.READ_CLINIC_INFO, Action.READ_SLOTS, Action.REQUEST_CALLBACK},
     Mode.FAQ: {Action.READ_CLINIC_INFO, Action.READ_SLOTS, Action.REQUEST_CALLBACK},
-    # Booking and rescheduling can read clinic facts: "what's the fee?" mid-booking must not
-    # force a switch to FAQ, which would clear the slot under discussion.
+    # Booking can read clinic facts: "what's the fee?" mid-booking must not force a switch to
+    # FAQ, which would clear the slot under discussion.
     Mode.BOOKING: {
         Action.READ_CLINIC_INFO,
         Action.READ_SLOTS,
+        Action.HOLD_SLOT,
         Action.CREATE_BOOKING,
         Action.REQUEST_CALLBACK,
     },
     Mode.RESCHEDULING: {
-        Action.READ_CLINIC_INFO,
+        Action.VERIFY_CALLER,
         Action.READ_OWN_BOOKING,
         Action.READ_SLOTS,
+        Action.HOLD_SLOT,
         Action.RESCHEDULE_BOOKING,
         Action.REQUEST_CALLBACK,
     },
-    Mode.CANCELLING: {Action.READ_OWN_BOOKING, Action.CANCEL_BOOKING, Action.REQUEST_CALLBACK},
+    Mode.CANCELLING: {
+        Action.VERIFY_CALLER,
+        Action.READ_OWN_BOOKING,
+        Action.CANCEL_BOOKING,
+        Action.REQUEST_CALLBACK,
+    },
     Mode.HANDOFF: {Action.REQUEST_CALLBACK},
 }
 NEEDS_VERIFICATION = {Action.READ_OWN_BOOKING, Action.RESCHEDULE_BOOKING, Action.CANCEL_BOOKING}
@@ -93,6 +134,8 @@ def check(state: CallState, action: Action) -> None:
     """Raise Refused unless `action` is allowed right now. Called by every tool before it acts."""
     if action not in ALLOWED[state.mode]:
         raise Refused(f"{action} is not allowed in {state.mode} mode")
+    if action == Action.VERIFY_CALLER and state.verification == Verification.FAILED:
+        raise Refused("verification already failed on this call")
     if action in NEEDS_VERIFICATION and state.verification != Verification.VERIFIED:
         raise Refused(f"{action} needs a verified caller")
     if action in NEEDS_READ_BACK and not (state.slot and state.slot.read_back_confirmed):
@@ -106,7 +149,10 @@ def switch_mode(state: CallState, mode: Mode) -> None:
     if mode != state.mode:
         state.history.append(f"{state.mode}->{mode}")
         state.mode = mode
-        state.slot = None if mode in (Mode.FAQ, Mode.HANDOFF) else state.slot
+        if mode in (Mode.FAQ, Mode.HANDOFF):
+            state.slot = None
+        if mode != Mode.CANCELLING and mode != Mode.RESCHEDULING:
+            state.listed_bookings, state.booking_id = {}, None
 
 
 def record_verification(state: CallState, *, matched_patient_id: int | None) -> None:
