@@ -8,12 +8,14 @@ import os
 from types import SimpleNamespace
 
 import pytest
+from dotenv import load_dotenv
 from livekit.agents import llm
 
 from agent import db, tools
 from agent.state import CallState, Mode, Verification
 from evals import sandbox
 
+load_dotenv(".env")  # EVAL_DATABASE_URL lives there; the skip check runs before any fixture
 pytestmark = pytest.mark.skipif(
     not os.environ.get("EVAL_DATABASE_URL"), reason="needs EVAL_DATABASE_URL (eval sandbox)"
 )

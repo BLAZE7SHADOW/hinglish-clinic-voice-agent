@@ -175,12 +175,14 @@ row is owed at the next measured run.
 
 ## Next task
 
-1. **Create the eval sandbox:** a second Supabase project (free plan allows two) or a local
-   Postgres. Put its URL in `.env` as `EVAL_DATABASE_URL`.
+1. ~~Create the eval sandbox~~ (done 2026-10-12): Docker container `clinic-eval-db` (Postgres
+   17.11, the same version as Supabase), `127.0.0.1:54329/clinic_eval`, data in the volume
+   `clinic-eval-pgdata`, restarts with Docker. Migrated and seeded. The URL is in `.env` as
+   `EVAL_DATABASE_URL`.
 2. **Run** (when you OK testing): `uv run pytest` (the sandbox DB tests run once the URL is
    set), then `uv run python -m evals.run --split dev`. Record counts in `LATENCY_LOG.md`.
-3. **Apply migration 003** to the main DB, then a short voice test: book, reschedule, cancel,
-   and the backchannel calls 5, 8 and 10.
+3. ~~Apply migration 003~~ (done 2026-10-12 on Supabase). Next: a short voice test of book,
+   reschedule and cancel, and the backchannel calls 5, 8 and 10.
 4. **Week 3:** E1/E6, the filler line during tool calls, phase-aware endpointing.
 
 Still open from week 1: `AUDIO_PATH.md` (yours to write), `DECISIONS.md`, and the day 6 items.
