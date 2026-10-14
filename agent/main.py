@@ -13,7 +13,7 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import backchannel, db, prompts, providers, telemetry, tools, vocabulary
+from agent import backchannel, db, prompts, providers, silence, telemetry, tools, vocabulary
 from agent.modes import Receptionist
 from agent.state import CallState
 
@@ -52,6 +52,8 @@ async def entrypoint(ctx: JobContext) -> None:
         stt=providers.build_stt_with_fallback(),
         llm=providers.build_llm_with_fallback(),
         tts=providers.build_tts_with_fallback(),
+        # How long both sides may be silent before the caller counts as "away" (agent/silence.py)
+        user_away_timeout=silence.SILENCE_S if silence.enabled() else None,
     )
 
     sink = telemetry.attach(
@@ -74,6 +76,16 @@ async def entrypoint(ctx: JobContext) -> None:
         await tools.release_call_holds(ctx.job.id)
 
     ctx.add_shutdown_callback(_release_holds)
+
+    if silence.enabled():  # re-engage a silent caller, then end the call politely
+        silent = silence.attach(
+            session, language=language, end_call=lambda: ctx.shutdown(reason="caller silent")
+        )
+
+        async def _silence_summary() -> None:
+            logger.info("silence reprompts this call: %d", silent.reprompts)
+
+        ctx.add_shutdown_callback(_silence_summary)
 
     await session.start(room=ctx.room, agent=Receptionist(language))
     if vocabulary.enabled():  # E9: per-clinic names as STT keyterms, loaded without blocking
