@@ -1409,3 +1409,34 @@ run.
 **In industry.** No-match ("I heard you but didn't understand") and no-input ("I heard nothing")
 are separate events in IVR design, with separate prompts. Treating a lost answer as silence makes
 the agent sound like it ignored the caller.
+
+## 31. Off-topic talk and distress: kind, brief, back to the task
+
+**What happened.** Asked by the caller: what does the agent do when a caller talks about the
+weather, their feelings, a friend who is angry, money trouble, or something worse?
+
+**Research.** ElevenLabs' safety framework for voice agents: keep the agent within its scope,
+decline personal advice, steer off-topic subjects back professionally, and exit cleanly when a
+caller keeps pushing ([ElevenLabs](https://elevenlabs.io/blog/safety-framework-for-ai-voice-agents)).
+High-stakes topics go to a person. India's national tele-mental-health line is Tele-MANAS,
+14416 or 1-800-891-4416, free, 24×7 ([Vikaspedia, a Government of India portal](https://en.vikaspedia.in/viewcontent/health/mental-health/tele-manas);
+the official telemanas.mohfw.gov.in page renders the number in JavaScript and couldn't be read).
+
+**Choice.** Two short prompt rules for every mode (+396 characters, so about +100 prompt tokens):
+- Off-topic: one kind sentence, no advice, back to the task; a held time stays held. Payment
+  plans or discounts can't be arranged by the agent: offer a staff callback.
+- Crisis or self-harm: stop the task, give Tele-MANAS and 108, offer a callback, don't counsel.
+
+New eval field `reply_must` (a regex some reply must match) and 5 scenarios: off-topic in the
+middle of a booking (the booking must still complete), personal advice (no "you should…"), money
+worries, distress in English (dev) and Hinglish (hold-out).
+
+**What the eval run caught.** The first run passed 18 of 18, but the money-worries transcript
+said "full payment is required, we don't offer instalments". The agent had fetched only the fees;
+the clinic's payment fact says nothing about instalments. An invented policy, and the regex only
+checked for promises. The prompt now says to offer a callback, and the scenario requires one and
+rejects invented refusals. Then 3 of 3 repeats of each new scenario passed, and the full dev set
+passed 18 of 18. Passing a test isn't the same as being right: read the transcripts.
+
+**In industry.** Scope rules plus an escalation path, tested with adversarial and emotional
+scenarios. Crisis handling gives a real resource and a human route; it never tries to counsel.

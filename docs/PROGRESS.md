@@ -251,8 +251,9 @@ row is owed at the next measured run.
 5. **Week 3, one change at a time (flag → text evals → voice calls → LATENCY_LOG row):**
    1. ~~Name and number capture (#25, #28)~~ done; still to do: spell-by-word escalation and a
       stop after two failed name checks, per-field capture metrics, keyterm scoping.
-   1b. ~~Silence handling (#29, #30)~~ done. Next: off-topic handling (prompt tiers + evals,
-      Tele-MANAS 14416 verified against the official site first).
+   1b. ~~Silence handling (#29, #30)~~ done, with `.env` settings (SILENCE_TIMEOUT_S,
+      SILENCE_MAX_REPROMPTS, TRANSCRIPTION_TIMEOUT_S).
+   1c. ~~Off-topic and crisis handling (#31)~~ built, dev evals 18 of 18. Voice test next (O1–O4).
    2. Backchannel resume fix (#26) and an interruption-mode field in telemetry. Re-test call 10.
    3. Phase-aware endpointing (#27).
    4. Read-back re-reads: measure, then decide whether a yes in the last words counts.

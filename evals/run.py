@@ -163,6 +163,11 @@ def score(sc, state, calls, outputs, replies, events, turn_ms, over_budget) -> d
         failures.append(f"final mode {state.mode}, wanted {sc.final_mode}")
     for pattern in sc.reply_must_not:
         failures += [f"reply matched {pattern!r}" for r in replies if re.search(pattern, r)]
+    failures += [
+        f"no reply matched {p!r}"
+        for p in sc.reply_must
+        if not any(re.search(p, r) for r in replies)
+    ]
     for name, args in calls:  # the LLM never computes dates (CLAUDE.md hard rule)
         if name == "find_slots" and ISO_DATE.search(str(args.get("when", ""))):
             failures.append(f"find_slots got a computed date: {args['when']!r}")
