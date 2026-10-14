@@ -141,6 +141,10 @@ class TurnBuilder:
         # for the rest of the call when its quota runs out (LEARNING #26), which changes
         # interruption behaviour mid-test, so every row says which one was live.
         self.interruption_mode: Callable[[], str] = lambda: "unknown"
+        # The endpointing phase the caller's turn was judged under (agent/endpointing.py):
+        # "off" unless ENDPOINTING=phase. Captured when the caller's message lands.
+        self.endpointing_phase: Callable[[], str] = lambda: "off"
+        self._turn_phase = "off"
         self._user_msg: llm.ChatMessage | None = None
         self._tools: list[ToolCall] = []
         self._agent_state = "initializing"
@@ -160,6 +164,7 @@ class TurnBuilder:
         # If the caller spoke several times before the agent replied, the last segment is
         # the one the reply's latency is measured from.
         self._user_msg = msg
+        self._turn_phase = self.endpointing_phase()
 
     def on_overlap(self, ev: OverlappingSpeechEvent) -> None:
         if ev.is_interruption and self._interrupt_onset is None:
@@ -201,7 +206,7 @@ class TurnBuilder:
                 self._base
                 | {
                     "providers": self._base["providers"]
-                    | {"interruption": self.interruption_mode()}
+                    | {"interruption": self.interruption_mode(), "endpointing": self._turn_phase}
                 }
             ),
             turn_index=self._turn_index,
@@ -333,7 +338,13 @@ def interruption_mode(session: AgentSession) -> str:
 
 
 def attach(
-    session: AgentSession, *, call_id: str, channel: str, language: str, providers: dict[str, str]
+    session: AgentSession,
+    *,
+    call_id: str,
+    channel: str,
+    language: str,
+    providers: dict[str, str],
+    endpointing_phase: Callable[[], str] | None = None,
 ) -> TurnSink:
     """Subscribe to session events and record one row per agent reply."""
     builder = TurnBuilder(
@@ -344,6 +355,8 @@ def attach(
         cold_call=_is_cold_call(),
     )
     builder.interruption_mode = lambda: interruption_mode(session)
+    if endpointing_phase is not None:
+        builder.endpointing_phase = endpointing_phase
     sink = TurnSink()
     LAST_CALL_MARKER.touch()
 

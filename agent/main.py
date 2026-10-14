@@ -13,7 +13,17 @@ from livekit.agents import (
 )
 from livekit.plugins import silero
 
-from agent import backchannel, db, prompts, providers, silence, telemetry, tools, vocabulary
+from agent import (
+    backchannel,
+    db,
+    endpointing,
+    prompts,
+    providers,
+    silence,
+    telemetry,
+    tools,
+    vocabulary,
+)
 from agent.modes import Receptionist
 from agent.state import CallState
 
@@ -59,6 +69,10 @@ async def entrypoint(ctx: JobContext) -> None:
         transcription_timeout=quiet.transcription_timeout_s if silence.enabled() else None,
     )
 
+    phases = None
+    if endpointing.enabled():  # ENDPOINTING=phase: the wait depends on the question asked
+        phases = endpointing.attach(session, endpointing.Settings.from_env())
+
     sink = telemetry.attach(
         session,
         call_id=ctx.job.id,
@@ -67,6 +81,7 @@ async def entrypoint(ctx: JobContext) -> None:
         channel="browser",
         language=language,
         providers=providers.describe(),
+        endpointing_phase=(lambda: phases.current) if phases else None,
     )
     ctx.add_shutdown_callback(sink.aclose)
 

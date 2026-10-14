@@ -1308,8 +1308,17 @@ allow a long wait; after a yes/no question or a slot choice, a short one. Or a l
 `max_endpointing_delay` everywhere (cuts digit sequences), or the audio-aware cloud model (no
 gain in E7, #10).
 
-**Choice.** This is the planned week 3 ENDPOINTING step, now with data showing where the time
-goes. Measure it by turn type (number, date, short answer, sentence).
+**Choice (built 2026-10-14, `agent/endpointing.py`, `ENDPOINTING=phase`, off by default).**
+After every agent message, code picks the phase for the caller's next turn and sets LiveKit's
+`max_delay` with `session.update_options(endpointing_opts=…)` (checked against the installed
+1.8.6 source: the default is 2.5 s, the value the waits hit):
+- long (3.0 s): a phone number, date of birth or spelling was asked for, or a name check is out
+  (a correction may be spelled, with pauses between letters)
+- short (1.0 s): a read-back is waiting, or a choice / "anything else?" question
+- default (2.5 s): everything else, unchanged
+Each value is an `.env` setting with bounds (short ≤ default ≤ long). Every turn row records
+`providers.endpointing` (the phase the caller's turn was judged under), so the voice session can
+report end of turn by phase, with the flag off as the baseline and on as the change.
 
 **In industry.** Production voice agents set the endpointing timeout per dialogue state: long
 for "please say your account number", short after "is that right?". IVR systems have done this
