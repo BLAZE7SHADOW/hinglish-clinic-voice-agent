@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from livekit.agents import UserStateChangedEvent, llm
+from livekit.agents import UserStateChangedEvent, UserTranscriptionTimeoutEvent, llm
 
 from agent import silence
 from agent.state import Action, CallState, PendingWrite
@@ -87,11 +87,33 @@ def test_a_pending_read_back_is_repeated_word_for_word():
     assert pending.times_spoken == 1  # silence isn't a misunderstanding
 
 
-def test_no_reprompt_after_the_agent_said_goodbye():
+def test_silence_after_the_goodbye_just_hangs_up():
+    """S1: she already said goodbye; a second goodbye would be odd."""
     s = FakeSession(last_agent="You're welcome! Have a wonderful day.")
-    h, _ = handler(s)
+    h, ended = handler(s)
     h.on_user_state(away())
-    assert s.replies == [] and "Goodbye" in s.said[0]
+    assert s.replies == [] and s.said == [] and ended == ["end"]
+
+
+def lost(seconds: float) -> UserTranscriptionTimeoutEvent:
+    return UserTranscriptionTimeoutEvent(speech_duration=seconds, vad_speech_started_at=0.0)
+
+
+def test_speech_without_words_is_asked_again_with_the_read_back():
+    """S4: VAD heard "yes" but STT returned nothing. Ask again at once, read-back included."""
+    pending = PendingWrite(action=Action.CREATE_BOOKING, key="k", text=READ_BACK, after_user_turn=3)
+    s = FakeSession(pending=pending)
+    h, _ = handler(s)
+    h.on_transcription_timeout(lost(0.6))
+    assert s.said == [f"Sorry, I didn't catch that. {READ_BACK}"]
+    assert h.lost_transcripts == 1 and h.reprompts == 0  # not counted as silence
+
+
+def test_a_short_noise_without_words_is_ignored():
+    s = FakeSession()
+    h, _ = handler(s)
+    h.on_transcription_timeout(lost(0.1))
+    assert s.said == [] and s.replies == [] and h.lost_transcripts == 0
 
 
 def test_silence_handling_can_be_switched_off(monkeypatch):

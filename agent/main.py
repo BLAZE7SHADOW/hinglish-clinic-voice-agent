@@ -54,6 +54,8 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=providers.build_tts_with_fallback(),
         # How long both sides may be silent before the caller counts as "away" (agent/silence.py)
         user_away_timeout=silence.SILENCE_S if silence.enabled() else None,
+        # Speech VAD heard but STT returned no words for: ask again (agent/silence.py)
+        transcription_timeout=silence.TRANSCRIPTION_TIMEOUT_S if silence.enabled() else None,
     )
 
     sink = telemetry.attach(
@@ -78,12 +80,14 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_release_holds)
 
     if silence.enabled():  # re-engage a silent caller, then end the call politely
-        silent = silence.attach(
-            session, language=language, end_call=lambda: ctx.shutdown(reason="caller silent")
-        )
+        silent = silence.attach(session, language=language, end_call=lambda: _hang_up(ctx))
 
         async def _silence_summary() -> None:
-            logger.info("silence reprompts this call: %d", silent.reprompts)
+            logger.info(
+                "silence reprompts this call: %d, lost transcripts: %d",
+                silent.reprompts,
+                silent.lost_transcripts,
+            )
 
         ctx.add_shutdown_callback(_silence_summary)
 
@@ -92,6 +96,18 @@ async def entrypoint(ctx: JobContext) -> None:
         keyterms = asyncio.create_task(vocabulary.clinic_keyterms())
         keyterms.add_done_callback(lambda t: _apply_keyterms(session, t))
     session.generate_reply(instructions=prompts.GREETING[language])
+
+
+def _hang_up(ctx: JobContext) -> None:
+    """End the call for everyone. Leaving isn't enough: the caller would stay in an empty room
+    (S3 re-test). Deleting the room disconnects every participant, phone callers included, as
+    LiveKit's own EndCallTool does."""
+
+    async def _delete_room() -> None:
+        await ctx.delete_room()
+
+    ctx.add_shutdown_callback(_delete_room)
+    ctx.shutdown(reason="caller silent")
 
 
 def _apply_keyterms(session: AgentSession, task: asyncio.Task[list[str]]) -> None:

@@ -14,6 +14,11 @@ LiveKit decides when the caller is "away": both sides silent for `user_away_time
 paused while a tool runs. Once a caller is away, LiveKit doesn't restart that timer by itself,
 so each reprompt calls `reset_away_timer()` to arm the next one. Any speech from the caller
 resets the count.
+
+A second case looks like silence but isn't: the caller spoke, VAD heard it, and STT returned no
+words (S4 re-test: a "yes" right after the read-back was lost). LiveKit reports it as
+`user_transcription_timeout`; the agent then says it didn't catch that and asks again within
+about 2 s, instead of waiting for the silence timer and asking "are you still there?".
 """
 
 import logging
@@ -21,7 +26,7 @@ import os
 import re
 from collections.abc import Callable
 
-from livekit.agents import AgentSession, UserStateChangedEvent
+from livekit.agents import AgentSession, UserStateChangedEvent, UserTranscriptionTimeoutEvent
 
 from agent.state import CallState
 
@@ -29,9 +34,12 @@ logger = logging.getLogger("silence")
 
 SILENCE_S = 8.0  # after the agent stops talking; long enough to think, short enough to notice
 MAX_REPROMPTS = 2  # then the third silence ends the call
+TRANSCRIPTION_TIMEOUT_S = 2.0  # caller spoke but no words came back from STT
+MIN_LOST_SPEECH_S = 0.25  # shorter VAD blips are noise (a cough, a click), not a lost answer
 
 _STILL_THERE = {"en": "Are you still there?", "hinglish": "Hello, kya aap line par hain?"}
 _NO_RUSH = {"en": "No rush.", "hinglish": "Koi jaldi nahi hai."}
+_NOT_CAUGHT = {"en": "Sorry, I didn't catch that.", "hinglish": "Maaf kijiye, sun nahi paayi."}
 _GOODBYE = {
     "en": "I'll end the call for now. Please call us again whenever you're ready. Goodbye!",
     "hinglish": "Abhi ke liye call band kar rahi hoon. Jab bhi aap ready hon, phir se call "
@@ -40,6 +48,8 @@ _GOODBYE = {
 _REPROMPT = {
     1: "The caller has been silent. In one short sentence, ask if they are still there, then "
     "repeat your last question.",
+    "lost": "The caller said something but it wasn't heard clearly. In one short sentence say "
+    "you didn't catch that, then repeat your last question.",
     2: "The caller is still silent. Say kindly that there is no rush, then ask your last "
     "question again in simpler words. One or two short sentences.",
 }
@@ -62,6 +72,7 @@ class SilenceHandler:
         self._end_call = end_call
         self.silences = 0  # in a row, since the caller last spoke
         self.reprompts = 0  # over the whole call, for the call summary
+        self.lost_transcripts = 0  # speech with no words from STT, for the call summary
 
     def on_user_state(self, ev: UserStateChangedEvent) -> None:
         if ev.new_state == "speaking":
@@ -70,28 +81,46 @@ class SilenceHandler:
             self.silences += 1
             self._handle()
 
+    def on_transcription_timeout(self, ev: UserTranscriptionTimeoutEvent) -> None:
+        if ev.speech_duration < MIN_LOST_SPEECH_S:
+            return
+        self.lost_transcripts += 1
+        logger.info(
+            "caller spoke but STT returned nothing: asking again",
+            extra={"speech_s": round(ev.speech_duration, 2)},
+        )
+        self._ask_again(_NOT_CAUGHT, "lost")
+
     def _handle(self) -> None:
         session, lang = self._session, self._language
-        if self.silences > MAX_REPROMPTS or _FAREWELL.search(_last_agent_text(session)):
+        if _FAREWELL.search(_last_agent_text(session)):
+            # She already said goodbye: just hang up, no second goodbye.
+            logger.info("caller silent after the goodbye: ending the call")
+            self._end_call()
+            return
+        if self.silences > MAX_REPROMPTS:
             logger.info("caller silent: ending the call", extra={"silences": self.silences})
             handle = session.say(_GOODBYE[lang], allow_interruptions=False)
             handle.add_done_callback(lambda _: self._end_call())
             return
         self.reprompts += 1
-        pending = session.userdata.pending
         logger.info(
             "caller silent: reprompt",
             extra={"silences": self.silences, "awaiting_yes": session.userdata.awaiting_yes},
         )
-        if pending is not None and not pending.confirmed:
-            # The read-back again, word for word, so the caller's yes still counts.
-            opener = _STILL_THERE if self.silences == 1 else _NO_RUSH
-            session.say(f"{opener[lang]} {pending.text}")
-        else:
-            session.generate_reply(instructions=_REPROMPT[self.silences], tool_choice="none")
+        self._ask_again(_STILL_THERE if self.silences == 1 else _NO_RUSH, self.silences)
         # LiveKit doesn't re-arm the away timer while the caller is "away"; this does, and it
         # starts counting once the reprompt has been spoken.
         session.reset_away_timer()
+
+    def _ask_again(self, opener: dict[str, str], reprompt: int | str) -> None:
+        session = self._session
+        pending = session.userdata.pending
+        if pending is not None and not pending.confirmed:
+            # The read-back again, word for word, so the caller's yes still counts.
+            session.say(f"{opener[self._language]} {pending.text}")
+        else:
+            session.generate_reply(instructions=_REPROMPT[reprompt], tool_choice="none")
 
 
 def _last_agent_text(session: AgentSession) -> str:
@@ -106,4 +135,5 @@ def attach(
 ) -> SilenceHandler:
     handler = SilenceHandler(session, language=language, end_call=end_call)
     session.on("user_state_changed", handler.on_user_state)
+    session.on("user_transcription_timeout", handler.on_transcription_timeout)
     return handler
