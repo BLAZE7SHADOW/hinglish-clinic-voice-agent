@@ -1311,3 +1311,93 @@ goes. Measure it by turn type (number, date, short answer, sentence).
 **In industry.** Production voice agents set the endpointing timeout per dialogue state: long
 for "please say your account number", short after "is that right?". IVR systems have done this
 for decades ("incomplete timeout" per grammar).
+
+## 28. Capture a name like a person would: confirm it first, read the booking back once
+
+**What happened.** In the R2 voice re-test (a new patient), every correction of the name
+repeated the whole slot read-back ("Doctor Anil Sharma, Thursday the fifteenth, six thirty…, for
+Kavita Kabir. Shall I book it?"). The caller's point: a receptionist gets the name right first
+and confirms the booking once, at the end. Also, the caller said "Kabir" and spelled it in one
+breath; STT heard "Kavita K a b I r", the LLM passed "Kavita Kabir", and the spelling only
+replaced the word it matched exactly.
+
+**Research.** Sierra's τ-Elicitation benchmark ([arXiv 2609.13602](https://arxiv.org/pdf/2609.13602),
+4,800 voice calls, GPT/Gemini/Grok agents): person names pass exactly in only about 30% of
+tasks under robust conditions. A prescribed ask → spell → read back → confirm → correct protocol
+adds 14–31 points, and validating each field before moving on raises task accuracy from 0.64
+to 0.82. LLM agents repairing errors on their own "often double down on an error or hallucinate
+a replacement", the "Kavita Kabir" merge. Amazon Lex captures naturally first and switches to
+spell-by-letter or spell-by-word on the retry, set by code
+([docs](https://docs.aws.amazon.com/lexv2/latest/dg/spelling-styles.html)).
+
+**Choice.** A new patient's name is confirmed on its own, spelled back by code ("I have the
+patient's name as Kabir, that's K, A, B, I, R. Is that right?"), with the same code read-back
+and yes check as writes. The booking read-back comes after the name is confirmed, once. A
+spelling now replaces every word that sounds like it. Patients on file skip the name step.
+
+**Verification.** 240 tests; dev evals 14 of 14 (book_happy shows the name check, then one
+booking read-back). Voice S4: "Kavita" was spelled back as K, A, V, I, T, A; the caller said
+"No, it's Kavir, k a b I r"; the next check was "Kabir, K, A, B, I, R"; then one booking read-back.
+Only the name was repeated.
+
+**Next (planned).** Escalate to spell-by-word after one failed name check, stop after two (book
+under the heard name flagged for staff, or offer a callback), and log first-try / turns-to-fix /
+gave-up per field. Then clear the doctor-name keyterms while the caller says their own name.
+
+**In industry.** Validate each field as it's captured and confirm the whole task once. Never
+let the LLM run the repair loop on its own.
+
+## 29. Silence: re-engage, then hang up for everyone
+
+**What happened.** R3: the caller was silent for about 15 s after a read-back and the agent said
+nothing. Then S3 (silent the whole call): the agent left, but the caller stayed connected to an
+empty room.
+
+**Mechanism.** LiveKit marks the user "away" after `user_away_timeout` of mutual silence
+(default 15 s, paused while tools run), but nothing in our code listened for it. Once a user is
+away, LiveKit doesn't re-arm the timer by itself. `ctx.shutdown()` ends the agent's job, not the
+call: the room and the caller remain.
+
+**Research.** Google's Dialogflow CX voice design guidance: repeat the question after the first
+no-input, rephrase it on the second, hand off at about the third
+([guide](https://docs.cloud.google.com/dialogflow/cx/docs/concept/voice-agent-design?hl=it)).
+Vapi and Cognigy document the same reprompt-then-end pattern.
+
+**Choice.** `agent/silence.py`, behind `SILENCE_REPROMPT` (default on): after 8 s, "Are you still
+there?" plus the last question; after the second, "No rush" plus the question in simpler words;
+the third ends the call with a goodbye from code. A pending read-back is repeated word for word,
+so a yes after it still counts. Each reprompt calls `reset_away_timer()`. After the agent's own
+goodbye a silence just hangs up. Hanging up deletes the room, as LiveKit's `EndCallTool` does,
+so every participant (phone callers too) is disconnected.
+
+**Verification.** 247 tests. Voice: S1 reprompted at 8 s with the read-back and the "yes" after
+it booked; S2 gave two reprompts (the second rephrased) and the caller came back; S3 said goodbye
+and ended the job. Room deletion is tested in the next voice run.
+
+**In industry.** Every no-input path needs a bounded number of retries and a clean exit. The
+worst failure is silence on both ends, with neither side knowing whose turn it is.
+
+## 30. A "yes" heard by VAD but never transcribed
+
+**What happened.** S4: the caller said "yes" a second after the booking read-back. The final
+turn's `speech_start_time` is 13:47:06.6, one second after the read-back ended, but no
+transcript came back for it. 8 s later the silence handler asked "are you still there?", and only
+the caller's second "yes" (13:47:28) was transcribed. To the caller, the yes was ignored and the
+transcript order looked wrong.
+
+**Mechanism.** VAD detected speech; Deepgram returned no final (and no logged interim) words for
+it. The cause isn't confirmed. A candidate from earlier calls is Deepgram's 25 ms
+`endpointing_ms` splitting or dropping very short words (LEARNING E7 notes). LiveKit can detect
+the symptom: `transcription_timeout` emits `user_transcription_timeout` when VAD speech gets no
+final transcript in time.
+
+**Choice.** Detect and recover now, measure the cause next: after 2 s without words for at least
+0.25 s of speech, the agent says "Sorry, I didn't catch that" and repeats the read-back (or its
+question). Lost transcripts are counted per call. Then test `endpointing_ms` on its own.
+
+**Verification.** Tests for the read-back repeat and for ignoring sub-0.25 s blips. Voice: next
+run.
+
+**In industry.** No-match ("I heard you but didn't understand") and no-input ("I heard nothing")
+are separate events in IVR design, with separate prompts. Treating a lost answer as silence makes
+the agent sound like it ignored the caller.
