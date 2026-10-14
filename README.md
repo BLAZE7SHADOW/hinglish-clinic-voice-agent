@@ -36,9 +36,10 @@ A voice receptionist for small Indian clinics. A caller speaks in English or Hin
 | Voice-to-voice with read-only tools | English, browser, 10 calls, 27 turns | p50 2,781 ms / p95 4,996 ms; 9 of 10 correct, 0 made-up facts |
 | Barge-in stop time | same calls | p50 346 ms |
 | Booking, reschedule, cancel flows | text evals, dev split | **13 of 13** tasks, 0 wrong actions, 0 verification violations |
-| Unit and DB tests | `pytest` | 208 passing |
+| Same flows by voice | English, browser, 9 calls, 53 turns | all scripted writes correct, 0 wrong actions; V2V p50 3,829 ms (end-of-turn waits are the next fix) |
+| Unit and DB tests | `pytest` | 217 passing |
 
-The voice-to-voice figures are from a desk setup on a browser connection, not a phone line. An experiment that swapped in the cloud turn-detector model showed no improvement and was reverted (written up in [`docs/LEARNING.md`](docs/LEARNING.md)). Voice latency for the week 2 write flows is still to be measured.
+The voice-to-voice figures are from a desk setup on a browser connection, not a phone line. An experiment that swapped in the cloud turn-detector model showed no improvement and was reverted (written up in [`docs/LEARNING.md`](docs/LEARNING.md)). In the week 2 voice test, half the turns (phone numbers, dates, short answers) waited the full 2.5 s end-of-turn delay; phase-aware endpointing is the week 3 fix.
 
 ## Architecture
 
@@ -66,7 +67,7 @@ Python 3.12 · uv · LiveKit Agents 1.8 (LiveKit Cloud) · Deepgram nova-3 · Ge
 ## Roadmap
 
 - [x] **Week 1:** voice loop, per-stage latency telemetry, baseline, clinic data, read-only tools
-- [x] **Week 2:** modes and guards, verification, holds, bookings, code read-backs, eval runner *(voice test pending)*
+- [x] **Week 2:** modes and guards, verification, holds, bookings, code read-backs, eval runner, voice test
 - [ ] **Week 3:** backchannel filter, turn-taking and latency optimization pass, **V1 demo video**
 - [ ] **Week 4:** Indian phone number; Hinglish audio, a word-error-rate test set and turn-detection tuning
 - [ ] **Week 5:** Temporal workflows for confirmations, reminders and dropped calls; WhatsApp or SMS
