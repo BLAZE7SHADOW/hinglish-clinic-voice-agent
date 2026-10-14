@@ -56,6 +56,24 @@ def test_birth_dates(spoken):
 
 
 @pytest.mark.parametrize(
+    ("spoken", "born"),
+    [
+        ("Third March nineteen eighty eight", date(1988, 3, 3)),
+        ("fourth September nineteen seventy-four", date(1974, 9, 4)),
+        ("ninth July nineteen sixty-two", date(1962, 7, 9)),
+        ("the twenty-first of June nineteen ninety", date(1990, 6, 21)),
+        ("thirty first December two thousand and five", date(2005, 12, 31)),
+        ("first January nineteen oh nine", date(1909, 1, 1)),
+        ("second February two thousand", date(2000, 2, 2)),
+        ("twelve August nineteen ninety nine", date(1999, 8, 12)),
+    ],
+)
+def test_spoken_birth_dates(spoken, born):
+    """STT writes spoken dates as words (week 2 voice test: "Third March nineteen eighty eight")."""
+    assert parse_birth_date(spoken, TODAY) == born
+
+
+@pytest.mark.parametrize(
     "spoken",
     ["15 August 90", "31/02/1990", "5 March 2030", "15 August 1890", "fifteenth August", ""],
 )

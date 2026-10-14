@@ -300,6 +300,125 @@ _DOB_NUMERIC = re.compile(r"\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})\b")  # India
 _DOB_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 MAX_AGE_YEARS = 120
 
+# Spoken numbers in a date of birth. STT writes "third March nineteen eighty-eight" as words, so
+# code turns them into "3 March 1988" before parsing (found in the week 2 voice test).
+_SPOKEN_UNITS = {
+    w: i
+    for i, w in enumerate(
+        [
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+        ]
+    )
+}
+_SPOKEN_TENS = {
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+_SPOKEN_ORDINALS = {
+    w: i
+    for i, w in enumerate(
+        [
+            "first",
+            "second",
+            "third",
+            "fourth",
+            "fifth",
+            "sixth",
+            "seventh",
+            "eighth",
+            "ninth",
+            "tenth",
+            "eleventh",
+            "twelfth",
+            "thirteenth",
+            "fourteenth",
+            "fifteenth",
+            "sixteenth",
+            "seventeenth",
+            "eighteenth",
+            "nineteenth",
+        ],
+        start=1,
+    )
+} | {"twentieth": 20, "thirtieth": 30}
+
+
+def _at(words: list[str], i: int) -> str:
+    return words[i] if i < len(words) else ""
+
+
+def _spoken_two_digits(words: list[str], i: int) -> tuple[int, int, bool] | None:
+    """(value, next index, is ordinal) for a number from 0 to 99 starting at words[i]."""
+    w, nxt = words[i], _at(words, i + 1)
+    if w in _SPOKEN_TENS:
+        if 0 < _SPOKEN_UNITS.get(nxt, 0) < 10:
+            return _SPOKEN_TENS[w] + _SPOKEN_UNITS[nxt], i + 2, False
+        if _SPOKEN_ORDINALS.get(nxt, 0) < 10 and nxt in _SPOKEN_ORDINALS:
+            return _SPOKEN_TENS[w] + _SPOKEN_ORDINALS[nxt], i + 2, True
+        return _SPOKEN_TENS[w], i + 1, False
+    if w in _SPOKEN_UNITS:
+        return _SPOKEN_UNITS[w], i + 1, False
+    if w in _SPOKEN_ORDINALS:
+        return _SPOKEN_ORDINALS[w], i + 1, True
+    return None
+
+
+def _spoken_to_digits(text: str) -> str:
+    """ "third march nineteen eighty eight" -> "3 march 1988". Other words pass through."""
+    words = re.findall(r"[a-z]+|\d+", text.replace("-", " "))
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        if words[i : i + 2] == ["two", "thousand"]:  # two thousand (and) five
+            i += 3 if words[i + 2 : i + 3] == ["and"] else 2
+            rest = _spoken_two_digits(words, i) if i < len(words) else None
+            if rest and not rest[2]:
+                out.append(str(2000 + rest[0]))
+                i = rest[1]
+            else:
+                out.append("2000")
+            continue
+        got = _spoken_two_digits(words, i)
+        if got is None:
+            out.append(words[i])
+            i += 1
+            continue
+        value, i, ordinal = got
+        if not ordinal and value in (19, 20) and i < len(words):  # a year: 19 + 88
+            if words[i] == "hundred":
+                value, i = value * 100, i + 1
+            elif words[i] in ("oh", "o") and 0 < _SPOKEN_UNITS.get(_at(words, i + 1), 0) < 10:
+                value, i = value * 100 + _SPOKEN_UNITS[words[i + 1]], i + 2
+            elif (low := _spoken_two_digits(words, i)) and not low[2] and low[0] >= 10:
+                value, i = value * 100 + low[0], low[1]
+        out.append(str(value))
+    return " ".join(out)
+
 
 def parse_birth_date(text: str, today: date) -> date | None:
     """A date of birth from the caller's words, or None if it isn't clear.
@@ -315,7 +434,7 @@ def parse_birth_date(text: str, today: date) -> date | None:
     elif m := _DOB_NUMERIC.search(t):
         day, month, year = (int(g) for g in m.groups())
     else:
-        words = re.findall(r"[a-z]+|\d+", t)
+        words = re.findall(r"[a-z]+|\d+", _spoken_to_digits(t))
         months = [_MONTH_WORDS[w] for w in words if w in _MONTH_WORDS]
         years = [int(w) for w in words if w.isdigit() and len(w) == 4]
         days = [int(w) for w in words if w.isdigit() and len(w) <= 2]
