@@ -25,3 +25,6 @@ logs/
 
 # Eval run outputs
 evals/results/
+
+# GitHub profile README draft (pasted into the BLAZE7SHADOW profile repo, not part of this project)
+PROFILE_README.md
