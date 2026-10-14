@@ -66,11 +66,24 @@ def test_patched_framework_methods_still_exist():
     for name in ("_start_false_interruption_timer", "_cancel_preemptive_generation"):
         assert callable(getattr(AgentActivity, name))
     assert isinstance(AgentActivity.session, property)  # read for the call state
+    from livekit.agents import AgentSession
+
+    assert isinstance(AgentSession.user_state, property)  # read to arm a late resume (#26)
+    assert "_interruption_detection_enabled" in inspect.getsource(AgentActivity.__init__)
 
 
 class FakeActivity:
-    def __init__(self, *, speaking_agent: bool, paused: bool = False, awaiting_yes=False):
-        self.session = SimpleNamespace(userdata=SimpleNamespace(awaiting_yes=awaiting_yes))
+    def __init__(
+        self,
+        *,
+        speaking_agent: bool,
+        paused: bool = False,
+        awaiting_yes=False,
+        user_state="speaking",
+    ):
+        self.session = SimpleNamespace(
+            userdata=SimpleNamespace(awaiting_yes=awaiting_yes), user_state=user_state
+        )
         self._current_speech = (
             SimpleNamespace(interrupted=False, allow_interruptions=True) if speaking_agent else None
         )
@@ -132,3 +145,23 @@ def test_yes_words_are_answers_while_a_read_back_waits(monkeypatch):
     backchannel._on_final_transcript(act, final("Haan."), speaking=False)
     backchannel._on_end_of_turn(act, SimpleNamespace(new_transcript="Haan."))
     assert len(calls) == 2
+
+
+def test_a_late_pause_still_resumes(monkeypatch):
+    """Call 10 (#26): the detector paused her after the caller's speech had ended, so LiveKit
+    never armed the resume. The filter must arm it when the caller is already quiet."""
+    monkeypatch.setattr(backchannel, "_original_on_final_transcript", lambda *a, **k: None)
+    act = FakeActivity(speaking_agent=True, paused=True, user_state="listening")
+    backchannel._on_final_transcript(act, final("Oh, okay."), speaking=None)
+    assert act.timer == backchannel.RESUME_AFTER_S
+
+    act = FakeActivity(speaking_agent=True, paused=True, user_state="listening")
+    assert backchannel._on_end_of_turn(act, SimpleNamespace(new_transcript="Okay.")) is False
+    assert act.timer == backchannel.RESUME_AFTER_S
+
+
+def test_no_resume_while_the_caller_is_still_talking(monkeypatch):
+    monkeypatch.setattr(backchannel, "_original_on_final_transcript", lambda *a, **k: None)
+    act = FakeActivity(speaking_agent=True, paused=True, user_state="speaking")
+    backchannel._on_final_transcript(act, final("Okay."), speaking=None)
+    assert act.timer is None and act._paused_speech.timeout == backchannel.RESUME_AFTER_S

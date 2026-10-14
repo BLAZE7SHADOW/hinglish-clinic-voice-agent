@@ -73,13 +73,32 @@ _original_on_final_transcript = AgentActivity.on_final_transcript
 _original_on_end_of_turn = AgentActivity.on_end_of_turn
 
 
+def _caller_quiet(activity: AgentActivity) -> bool:
+    try:
+        return activity.session.user_state != "speaking"
+    except (AttributeError, RuntimeError):
+        return False
+
+
+def _arm_resume(activity: AgentActivity, *, speaking: bool | None = None) -> None:
+    """Make sure paused speech resumes once the caller is quiet.
+
+    LiveKit arms the resume at the caller's end of speech, and only if speech is paused by then.
+    When the adaptive detector decides late (1.3 s in call 10), the pause starts after that
+    end of speech, nothing arms the resume, and the agent stays silent (LEARNING #26). So the
+    filter arms it itself whenever the caller is already quiet.
+    """
+    if (paused := activity._paused_speech) is None:
+        return
+    paused.timeout = RESUME_AFTER_S  # used if the caller's speech ends later
+    if speaking is False or _caller_quiet(activity):
+        activity._start_false_interruption_timer(RESUME_AFTER_S)
+
+
 def _on_final_transcript(self: AgentActivity, ev, *, speaking: bool | None = None) -> None:
     if _agent_turn_active(self) and is_backchannel(ev.alternatives[0].text):
         logger.debug("backchannel ignored", extra={"lk.pii.text": ev.alternatives[0].text})
-        if (paused := self._paused_speech) is not None:
-            paused.timeout = RESUME_AFTER_S  # used when the caller's speech ends
-            if speaking is False:  # it already ended: arm the resume now
-                self._start_false_interruption_timer(RESUME_AFTER_S)
+        _arm_resume(self, speaking=speaking)
         return
     _original_on_final_transcript(self, ev, speaking=speaking)
 
@@ -88,6 +107,7 @@ def _on_end_of_turn(self: AgentActivity, info) -> bool:
     if _agent_turn_active(self) and is_backchannel(info.new_transcript):
         # Same handling as LiveKit's min_words gate: drop the turn, keep the agent's speech.
         self._cancel_preemptive_generation()
+        _arm_resume(self)
         logger.info("backchannel turn dropped; agent keeps talking")
         return False
     return _original_on_end_of_turn(self, info)

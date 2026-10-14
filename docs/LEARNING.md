@@ -1278,10 +1278,13 @@ interruption for the rest of the call, so behaviour changes mid-test.
   the filter only (no quota, more false pauses).
 - A plan with a higher quota (cost).
 
-**Choice (week 3 step, behind a flag).** Fix the resume arming first and re-test with call 10
-(several runs). Log every adaptive-to-VAD fallback as a telemetry field, so latency rows show
-which interruption mode the call actually used. Decide about the quota from measured requests
-per call.
+**Choice (built 2026-10-14).** The filter now arms the resume itself whenever speech is
+paused and the caller is already quiet (`session.user_state != "speaking"`), both on the
+backchannel transcript and when the backchannel turn is dropped. Every telemetry row now records
+`providers.interruption` = adaptive / vad, read from the live activity, so latency rows show
+which detector each turn used. A test fails if the LiveKit internals this relies on change.
+Voice re-test: call 10, several runs, in the end-of-step voice session. Quota decision after
+measuring requests per call.
 
 **In industry.** Barge-in systems separate "pause" from "stop": pause at the first sign of
 speech, and stop only once the words show an intent to take the turn. Every path into "paused"

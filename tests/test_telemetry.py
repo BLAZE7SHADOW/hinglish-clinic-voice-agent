@@ -186,3 +186,17 @@ def test_cold_call_means_worker_was_idle(tmp_path, monkeypatch):
     old = time.time() - telemetry.IDLE_COLD_S - 1
     os.utime(marker, (old, old))
     assert telemetry._is_cold_call()  # idle longer than the threshold
+
+
+def test_each_turn_records_the_interruption_mode():
+    """#26: the adaptive detector falls back to VAD mid-call when its quota runs out."""
+    from types import SimpleNamespace
+
+    from agent.telemetry import interruption_mode
+
+    def session(enabled):
+        return SimpleNamespace(_activity=SimpleNamespace(_interruption_detection_enabled=enabled))
+
+    assert interruption_mode(session(True)) == "adaptive"
+    assert interruption_mode(session(False)) == "vad"
+    assert interruption_mode(SimpleNamespace(_activity=None)) == "unknown"

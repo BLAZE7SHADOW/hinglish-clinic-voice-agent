@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,10 @@ class TurnBuilder:
             "cold_call": cold_call,
         }
         self._turn_index = 0
+        # Which barge-in detector this turn used. The adaptive one silently falls back to VAD
+        # for the rest of the call when its quota runs out (LEARNING #26), which changes
+        # interruption behaviour mid-test, so every row says which one was live.
+        self.interruption_mode: Callable[[], str] = lambda: "unknown"
         self._user_msg: llm.ChatMessage | None = None
         self._tools: list[ToolCall] = []
         self._agent_state = "initializing"
@@ -192,7 +197,13 @@ class TurnBuilder:
             stop_ms = _ms(self._agent_stopped_at - onset)
 
         record = TurnRecord(
-            **self._base,
+            **(
+                self._base
+                | {
+                    "providers": self._base["providers"]
+                    | {"interruption": self.interruption_mode()}
+                }
+            ),
             turn_index=self._turn_index,
             user_speech_start_at=_ts(u.get("started_speaking_at")),
             user_speech_end_at=_ts(stopped),
@@ -314,6 +325,13 @@ def _append(path: Path, line: str) -> None:
         f.write(line)
 
 
+def interruption_mode(session: AgentSession) -> str:
+    """ "adaptive" (LiveKit's model), "vad" (fallback, or never enabled), or "unknown"."""
+    activity = getattr(session, "_activity", None)
+    enabled = getattr(activity, "_interruption_detection_enabled", None)
+    return "unknown" if enabled is None else "adaptive" if enabled else "vad"
+
+
 def attach(
     session: AgentSession, *, call_id: str, channel: str, language: str, providers: dict[str, str]
 ) -> TurnSink:
@@ -325,6 +343,7 @@ def attach(
         providers=providers,
         cold_call=_is_cold_call(),
     )
+    builder.interruption_mode = lambda: interruption_mode(session)
     sink = TurnSink()
     LAST_CALL_MARKER.touch()
 
