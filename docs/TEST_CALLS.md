@@ -123,3 +123,28 @@ Thursday 15 October Dr. Sharma has 6:00, 6:15, 6:30, 7:00 PM and later free.
 | R2 | **New patient, spelled name** | Same start, "Six thirty, please." → phone "nine eight three three three, four four five five five" → birth date "twelfth June nineteen ninety-one" → when she asks your name: "Kabir. K, A, B, I, R." → correct her if the read-back name is wrong → "Yes." | She asks the name only after phone and birth date. Read-back says "for Kabir" (count the turns if not) |
 | R3 | **Change of mind (old W3)** | Same start, "Six PM, please." → Kabir's phone and birth date as in R1 → after the read-back: "No, wait, make it seven PM." → after the new read-back: "Yes." | Nothing booked after "No, wait". New read-back at seven in the evening. Booked at 7 PM |
 
+
+# Week 3 integration voice session (English)
+
+One session for everything built on 14 October afternoon, one flag at a time so each change has
+its own latency row. Restart the worker after each `.env` change. Re-seed first
+(`uv run python -m db.seed` + fixtures) so slots are free.
+
+**Core set (the same 6 calls in every round):**
+1. Book, patient on file (Kabir, phone + date of birth, no name asked).
+2. Book, new patient (new number; say the name, correct it once if misheard).
+3. Reschedule (Rohan).
+4. Clinic question with a soft "okay" while she answers (backchannel resume, #26).
+5. Off-topic in the middle of a booking (O1), then the personal-advice line (O2).
+6. Money worries (O3) and distress (O4) in one call.
+
+| Round | `.env` | Measures |
+|---|---|---|
+| A | `ENDPOINTING=off`, `FILLER=off`, `READBACK_YES_AFTER_FACTS=off` | the new baseline (prompt +100 tokens, silence and name handling on) |
+| B | `ENDPOINTING=phase` | end of turn by phase (`providers.endpointing`), V2V; any cut-off numbers? |
+| C | B + `FILLER=on` | time to first audio on tool turns; filler plays before the reply (log order)? |
+| D | C + `READBACK_YES_AFTER_FACTS=on`, and in calls 1–2 say "yes" over "Shall I…" | re-reads per read-back |
+
+After each round: `uv run python -m scripts.latency_report --since <time>` and a
+`LATENCY_LOG.md` row; per-turn `providers.interruption` shows whether the adaptive detector
+was live.

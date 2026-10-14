@@ -238,6 +238,23 @@ row is owed at the next measured run.
 - **Open from these runs:** a quick yes over the end of a read-back still forces a re-read (H3);
   13 s from "No, wait, make it seven" to the new read-back (two tool calls) in R3.
 
+## Week 3 build (2026-10-14, evening): steps 1–5, voice test batched
+
+Built one change at a time, each with unit tests (274 pass) and text evals where they apply;
+the voice test is batched into one session with each flag switched on in turn
+(`TEST_CALLS.md`, "Week 3 integration voice session").
+1. **Name capture protocol** (#32): spell-by-word after a bare "no", stop after two failed
+   checks with a callback; `name_checks_failed` on `booking_created`. Dev evals 19 of 19.
+2. **Backchannel resume** (#26): a late pause now resumes; every turn records the
+   interruption mode (adaptive / vad).
+3. **Phase-aware endpointing** (#27, `ENDPOINTING=phase`, off): short 1.0 s / default 2.5 s /
+   long 3.0 s waits from the question asked; each turn records its phase.
+4. **Yes over the closing question** (#33, `READBACK_YES_AFTER_FACTS`, off): counts only if every
+   fact was heard.
+5. **Filler line** (#34, `FILLER`, off) during lookups, kept out of history. E1 harness:
+   `evals.run --model X --no-fallback`.
+Silence settings are in `.env` too. Not voice-tested yet: everything in this section, plus O1–O4.
+
 ## Next task
 
 1. ~~Create the eval sandbox~~ (done 2026-10-12): Docker container `clinic-eval-db` (Postgres
