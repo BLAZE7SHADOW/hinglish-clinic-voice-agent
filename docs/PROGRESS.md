@@ -208,6 +208,19 @@ row is owed at the next measured run.
   - W7: "shortly" sounds like a time promise.
 - Worker log: `logs/worker-2026-10-14.log` (git-ignored, contains transcripts).
 
+## Week 3 step 1 (2026-10-14): name and number capture
+
+- `confirm_booking` asks phone, then date of birth, and looks the patient up. On file: the name
+  on file is read back and the caller is verified (phone + date of birth). Only a new patient is
+  asked for a name.
+- Phone numbers and dates of birth are parsed from the caller's own turns when the LLM's copy
+  doesn't parse (`common.from_caller`). Spelled names ("K a b I r", "B for ball", NATO) are
+  turned into words in code and replace the word they spell (`identity.parse_spelled_name`,
+  `apply_spelling`).
+- 237 tests pass (+20). Dev evals 14 of 14 (new `book_existing_patient`). LATENCY_LOG row.
+- Keyterm scoping is not in this step.
+- **Next:** voice re-test R1–R3 (`TEST_CALLS.md`, "Week 3 step 1 re-test").
+
 ## Next task
 
 1. ~~Create the eval sandbox~~ (done 2026-10-12): Docker container `clinic-eval-db` (Postgres

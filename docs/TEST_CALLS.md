@@ -109,3 +109,17 @@ Tell Claude "done" plus your notes. Claude then checks:
 - **Logs:** refused writes (`write held back`), guard refusals, which provider spoke (any
   Sarvam fallback means Cartesia failed).
 - Then a `LATENCY_LOG.md` row labelled "Week 2 voice baseline", and the findings in `LEARNING.md`.
+
+# Week 3 step 1 re-test: name and number capture (English)
+
+Tests LEARNING #25's fix by voice. 3 calls plus a warm-up, about 10 minutes. Uses the data left
+by the 14 October test (no re-seed): Kabir is on file (98111 22333, 3 March 1988), and on
+Thursday 15 October Dr. Sharma has 6:00, 6:15, 6:30, 7:00 PM and later free.
+
+| # | Tests | What you say | Expected |
+|---|---|---|---|
+| 0 | Warm-up (excluded) | "Hello" | Any reply |
+| R1 | **Patient on file** | "Book me with Doctor Sharma tomorrow evening." → "Six fifteen, please." → phone "nine eight one one one, two two three three three" → birth date "third March nineteen eighty-eight" → after the read-back: "Yes." | **She never asks your name.** Read-back ends "for Kabir". Booked |
+| R2 | **New patient, spelled name** | Same start, "Six thirty, please." → phone "nine eight three three three, four four five five five" → birth date "twelfth June nineteen ninety-one" → when she asks your name: "Kabir. K, A, B, I, R." → correct her if the read-back name is wrong → "Yes." | She asks the name only after phone and birth date. Read-back says "for Kabir" (count the turns if not) |
+| R3 | **Change of mind (old W3)** | Same start, "Six PM, please." → Kabir's phone and birth date as in R1 → after the read-back: "No, wait, make it seven PM." → after the new read-back: "Yes." | Nothing booked after "No, wait". New read-back at seven in the evening. Booked at 7 PM |
+
