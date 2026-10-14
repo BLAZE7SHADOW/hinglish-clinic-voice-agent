@@ -14,6 +14,7 @@ import os
 import re
 
 from agent import tools
+from agent.tools.common import CLINIC_NAME
 
 TITLES = {"dr", "doctor", "mr", "mrs", "ms", "prof"}
 MAX_KEYTERMS = 100  # Deepgram's documented limit per request
@@ -36,4 +37,4 @@ def keyterms_for(doctor_names: list[str], clinic_name: str) -> list[str]:
 
 async def clinic_keyterms() -> list[str]:
     doctors = await tools.load_doctors()
-    return keyterms_for([d.full_name for d in doctors], tools.CLINIC_NAME)
+    return keyterms_for([d.full_name for d in doctors], CLINIC_NAME)
