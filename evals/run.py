@@ -20,6 +20,7 @@ Counts, not only percentages (§16.2).
 import argparse
 import asyncio
 import json
+import os
 import re
 import statistics
 import sys
@@ -107,7 +108,8 @@ async def run_scenario(sc: Scenario) -> dict:
     over_budget = 0
 
     async with AgentSession[CallState](
-        llm=providers.build_llm_with_fallback(), userdata=state
+        llm=providers.build_llm() if NO_FALLBACK else providers.build_llm_with_fallback(),
+        userdata=state,
     ) as session:
         await session.start(Receptionist(sc.language))
         for line in sc.turns:
@@ -209,12 +211,23 @@ def summarize(results: list[dict]) -> dict:
     }
 
 
+# E1 (model comparison): one model, no fallback, so a failing model shows up as failures
+# instead of quietly being answered by the backup model.
+NO_FALLBACK = False
+
+
 async def main() -> int:
+    global NO_FALLBACK
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", choices=["dev", "holdout", "all"], default="dev")
     ap.add_argument("--only", nargs="*", help="scenario ids")
     ap.add_argument("--repeat", type=int, default=1, help="runs per scenario (LLM varies)")
+    ap.add_argument("--model", help="AI_MODEL for this run (E1 model comparison)")
+    ap.add_argument("--no-fallback", action="store_true", help="no backup LLM (use with --model)")
     args = ap.parse_args()
+    if args.model:
+        os.environ["AI_MODEL"] = args.model
+    NO_FALLBACK = args.no_fallback
 
     sandbox.enter()  # before anything imports a DB pool or reads the clock
     from agent import providers
@@ -234,7 +247,11 @@ async def main() -> int:
             print(f"{mark}  {sc.id:32s} {'; '.join(r['failures'])}")
 
     summary = summarize(results)
-    summary |= {"split": args.split, "providers": providers.describe()}
+    summary |= {
+        "split": args.split,
+        "providers": providers.describe(),
+        "fallback": not NO_FALLBACK,
+    }
     print(
         f"\n{summary['passed']} of {summary['scenarios']} passed"
         f" | wrong actions {summary['wrong_actions']}"
