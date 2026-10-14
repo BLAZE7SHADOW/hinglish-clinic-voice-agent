@@ -78,6 +78,13 @@ def held() -> Slot:
     return Slot(doctor_id=1, doctor_name="Dr. Anil Sharma", starts_at=FIVE_PM, hold_id=42)
 
 
+def booking_state(**kw) -> CallState:
+    """A booking call whose new-patient name the caller already confirmed (DETAILS' name)."""
+    return CallState(
+        call_id="AJ_t", mode=Mode.BOOKING, slot=held(), confirmed_name="Kabir Sethi"
+    ).model_copy(update=kw)
+
+
 DETAILS = {"patient_name": "Kabir Sethi", "phone": "98111 22333", "birth_date": "3 March 1988"}
 
 
@@ -97,7 +104,7 @@ async def test_confirm_needs_a_hold():
 
 
 async def test_first_confirm_speaks_the_code_read_back_and_books_nothing():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     c = ctx(state, ("user", "Five PM. I'm Kabir Sethi, 98111 22333, born 3 March 1988."))
     result = await tools.confirm_booking(c, **DETAILS)
 
@@ -110,7 +117,7 @@ async def test_first_confirm_speaks_the_code_read_back_and_books_nothing():
 
 
 async def test_yes_to_the_exact_read_back_reaches_the_write(write_allowed):
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     first = ctx(state, ("user", "Five PM, Kabir Sethi..."))
     await tools.confirm_booking(first, **DETAILS)
     spoken = first.session.said[0]
@@ -122,7 +129,7 @@ async def test_yes_to_the_exact_read_back_reaches_the_write(write_allowed):
 
 
 async def test_unclear_answer_writes_nothing_and_does_not_reread():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     first = ctx(state, ("user", "Five PM"))
     await tools.confirm_booking(first, **DETAILS)
     second = ctx(
@@ -133,7 +140,7 @@ async def test_unclear_answer_writes_nothing_and_does_not_reread():
 
 
 async def test_a_paraphrased_read_back_is_replaced_by_the_code_one():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     await tools.confirm_booking(ctx(state, ("user", "Five PM")), **DETAILS)
     llm_version = ("assistant", "So that's Wednesday at six, right?")
     second = ctx(state, ("user", "Five PM"), llm_version, ("user", "Yes"))
@@ -143,7 +150,7 @@ async def test_a_paraphrased_read_back_is_replaced_by_the_code_one():
 
 
 async def test_rereading_stops_after_three_tries():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     turns = [("user", "Five PM")]
     await tools.confirm_booking(ctx(state, *turns), **DETAILS)
     for _ in range(2):  # each time the caller answers something that isn't the read-back
@@ -155,7 +162,7 @@ async def test_rereading_stops_after_three_tries():
 
 
 async def test_changed_details_need_a_new_yes(write_allowed):
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     first = ctx(state, ("user", "Five PM"))
     await tools.confirm_booking(first, **DETAILS)
     yes = ctx(state, ("user", "Five PM"), ("assistant", first.session.said[0]), ("user", "Yes"))
@@ -169,7 +176,7 @@ async def test_changed_details_need_a_new_yes(write_allowed):
 
 
 async def test_missing_details_are_asked_for_before_any_read_back():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     c = ctx(state, ("user", "Five PM"))
     result = out(await tools.confirm_booking(c, patient_name="Rohan Joshi", phone="12"))
     assert result["error"] == "need_patient_details"
@@ -255,7 +262,7 @@ async def test_callback_needs_a_number_for_an_unverified_caller():
 
 
 async def test_awaiting_yes_tracks_a_pending_read_back():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     assert not state.awaiting_yes  # held, but nothing read back yet
     await tools.confirm_booking(ctx(state, ("user", "Five PM")), **DETAILS)
     assert state.awaiting_yes
@@ -271,7 +278,7 @@ async def test_a_patient_on_file_is_read_back_by_the_name_on_file(monkeypatch, n
         return [{"full_name": "Kabir"}]
 
     monkeypatch.setattr(db, "read", name_on_file)
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     c = ctx(state, ("user", "Nine eight one one one, two two three three three"))
     await tools.confirm_booking(c, phone="98111 22333", birth_date="3 March 1988")
     assert "for Kabir." in c.session.said[0]
@@ -279,7 +286,7 @@ async def test_a_patient_on_file_is_read_back_by_the_name_on_file(monkeypatch, n
 
 
 async def test_a_new_patient_is_asked_for_a_name_before_any_read_back():
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state()
     c = ctx(state, ("user", "Third March nineteen eighty eight"))
     result = out(await tools.confirm_booking(c, phone="98111 22333", birth_date="3 March 1988"))
     assert result["error"] == "new_patient"
@@ -288,7 +295,7 @@ async def test_a_new_patient_is_asked_for_a_name_before_any_read_back():
 
 async def test_a_number_split_across_turns_is_read_from_the_caller_not_the_llm():
     """W2: STT split the number and the LLM sent "two twothree"; code reads the turns."""
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state(confirmed_name="Kabir")
     c = ctx(
         state,
         ("user", "Nine eight one one one two two"),
@@ -305,9 +312,41 @@ async def test_a_number_split_across_turns_is_read_from_the_caller_not_the_llm()
 
 async def test_a_spelling_in_the_callers_words_fixes_the_name():
     """W1/W2: STT heard "Kavir"; the caller spelled it, and code applies the spelling."""
-    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    state = booking_state(confirmed_name=None)
     c = ctx(state, ("user", "It's Kavir, K a b I r."), ("user", "98111 22333, 3 March 1988"))
     await tools.confirm_booking(
         c, phone="98111 22333", birth_date="3 March 1988", patient_name="Kavir Sethi"
     )
-    assert "for Kabir Sethi." in c.session.said[0]
+    assert "name as Kabir Sethi" in c.session.said[0]
+
+
+async def test_a_new_patients_name_is_spelled_back_before_the_booking_read_back(write_allowed):
+    """R2 re-test: confirm the name on its own, then read the booking back once (#28)."""
+    state = booking_state(confirmed_name=None)
+    first = ctx(state, ("user", "Kabir. K a b I r."))
+    await tools.confirm_booking(first, **DETAILS)
+    (name_check,) = first.session.said
+    assert "K, A, B, I, R, then S, E, T, H, I" in name_check
+    assert "Doctor Anil Sharma" not in name_check  # the slot isn't repeated yet
+
+    yes = ctx(state, ("user", "Kabir. K a b I r."), ("assistant", name_check), ("user", "Yes"))
+    await tools.confirm_booking(yes, **DETAILS)
+    assert state.confirmed_name == "Kabir Sethi"
+    (booking,) = yes.session.said  # now the booking read-back, and nothing written yet
+    assert "Doctor Anil Sharma" in booking and "for Kabir Sethi" in booking
+
+
+async def test_a_name_correction_repeats_only_the_name():
+    state = booking_state(confirmed_name=None)
+    first = ctx(state, ("user", "Kavita"))
+    await tools.confirm_booking(first, **(DETAILS | {"patient_name": "Kavita"}))
+    no = ctx(
+        state,
+        ("user", "Kavita"),
+        ("assistant", first.session.said[0]),
+        ("user", "No, it's Kabir, K a b I r"),
+    )
+    await tools.confirm_booking(no, **(DETAILS | {"patient_name": "Kabir"}))
+    (again,) = no.session.said
+    assert again.startswith("I have the patient's name as Kabir,")
+    assert "Doctor" not in again

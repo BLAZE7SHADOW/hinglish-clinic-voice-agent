@@ -90,7 +90,8 @@ _NATO = {
     "quebec": "q", "romeo": "r", "sierra": "s", "tango": "t", "uniform": "u", "victor": "v",
     "whiskey": "w", "xray": "x", "yankee": "y", "zulu": "z",
 }  # fmt: skip
-MIN_SPELLED_LETTERS = 3  # "a" and "i" are also words: two letters in a row prove nothing
+MIN_SPELLED_LETTERS = 3
+SPELLING_MATCH = 0.5  # how alike a heard word and a spelling must be to be the same word  # "a" and "i" are also words: two letters in a row prove nothing
 
 
 def parse_spelled_name(text: str) -> str | None:
@@ -157,11 +158,14 @@ def apply_spelling(name: str, spelled: str | None) -> str:
     def score(word: str) -> float:
         return difflib.SequenceMatcher(None, _fold(word), _fold(spelled)).ratio()
 
-    best = max(range(len(words)), key=lambda k: score(words[k]))
-    if score(words[best]) < 0.5:
+    # Every word that sounds like the spelling is the same word heard differently: "Kavita
+    # Kabir" + "Kabir" is one name said and then spelled, not two names (R2 re-test, #28).
+    alike = [k for k, word in enumerate(words) if score(word) >= SPELLING_MATCH]
+    if not alike:
         return spelled
-    words[best] = spelled
-    return " ".join(words)
+    kept = [w for k, w in enumerate(words) if k not in alike[1:]]
+    kept[alike[0]] = spelled
+    return " ".join(kept)
 
 
 def _splice(word: str, part: str) -> str | None:

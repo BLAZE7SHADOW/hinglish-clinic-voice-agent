@@ -225,6 +225,15 @@ async def confirm_booking(
     except DB_ERRORS:
         logger.exception("confirm_booking failed")
         return UNAVAILABLE
+    if details is not None and state.confirmed_name != name:
+        # A new patient's name is checked on its own first, spelled back: a correction then
+        # repeats only the name, and the booking is read back once, at the end (LEARNING #28).
+        check = readback.name_check(name, language(context))
+        if gate := read_back_gate(
+            context, Action.CREATE_BOOKING, f"name|{name}", check, "confirm_booking"
+        ):
+            return gate
+        state.confirmed_name = name
     text = readback.booking(slot.doctor_name, slot.starts_at, name, language(context))
     key = f"{slot.hold_id}|{details or state.patient_id}"
     if gate := read_back_gate(context, Action.CREATE_BOOKING, key, text, "confirm_booking"):

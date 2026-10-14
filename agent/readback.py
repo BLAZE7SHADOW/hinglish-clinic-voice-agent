@@ -196,3 +196,15 @@ def cancel(doctor: str, starts_at: datetime, language: str) -> str:
     return (
         f"Just to confirm: you want to cancel your appointment with {doctor} on {day}, at {time}?"
     )
+
+
+def spelled(name: str) -> str:
+    """ "Kabir Sethi" -> "K, A, B, I, R, then S, E, T, H, I": letters for TTS to read one by one."""
+    return ", then ".join(", ".join(word.upper()) for word in re.findall(r"[A-Za-z]+", name))
+
+
+def name_check(name: str, language: str) -> str:
+    """A new patient's name, spelled back before the booking read-back (LEARNING #28)."""
+    if language == "hinglish":
+        return f"Patient ka naam {name} likh rahi hoon, {spelled(name)}. Sahi hai?"
+    return f"I have the patient's name as {name}, that's {spelled(name)}. Is that right?"

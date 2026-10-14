@@ -115,6 +115,7 @@ def test_spelled_names(said, spelled):
         ("Kavir Sethi", "Kabir", "Kabir Sethi"),
         ("Kabir Seti", "Sethi", "Kabir Sethi"),
         ("Kavita Sethi", "Kabir", "Kabir Sethi"),
+        ("Kavita Kabir", "Kabir", "Kabir"),  # R2: one name heard twice, then spelled
         ("", "Kabir", "Kabir"),
         ("Kabir Sethi", None, "Kabir Sethi"),
     ],

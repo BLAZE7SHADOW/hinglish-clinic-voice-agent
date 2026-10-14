@@ -79,6 +79,9 @@ class CallState(BaseModel):
     listed_bookings: dict[int, int] = Field(default_factory=dict)
     booking_id: int | None = None  # the booking being changed (reschedule / cancel)
     pending: PendingWrite | None = None  # at most one write waits for a yes at a time
+    # A new patient's name, once the caller said yes to it spelled back (LEARNING #28). The
+    # booking read-back comes only after this, so a name correction never repeats the slot.
+    confirmed_name: str | None = None
     callback_requested: bool = False
     misunderstandings: int = 0  # repeated "sorry?" leads to handoff (design §7.4)
     history: list[str] = Field(default_factory=list)  # mode changes, for the event log
