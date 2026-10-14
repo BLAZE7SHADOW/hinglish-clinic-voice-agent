@@ -25,7 +25,15 @@ from agent.state import (
     record_misunderstanding,
     record_verification,
 )
-from agent.tools.common import DB_ERRORS, UNAVAILABLE, clinic_id, error, guard, sync_mode
+from agent.tools.common import (
+    DB_ERRORS,
+    UNAVAILABLE,
+    clinic_id,
+    error,
+    from_caller,
+    guard,
+    sync_mode,
+)
 from agent.tools.read import fmt_day_slot
 
 logger = logging.getLogger("tools")
@@ -66,8 +74,8 @@ async def verify_caller(
     state = context.userdata
     if state.verification == Verification.VERIFIED:
         return json.dumps({"verified": True})
-    number = parse_phone(phone)
-    born = parse_birth_date(birth_date, now().date()) if birth_date else None
+    number = from_caller(context, phone, parse_phone)
+    born = from_caller(context, birth_date, lambda t: parse_birth_date(t, now().date()))
     if number is None or (not name.strip() and born is None):
         # Not a wrong answer, a misheard one: ask again, but don't loop forever.
         record_misunderstanding(state)

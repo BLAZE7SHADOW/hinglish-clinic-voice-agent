@@ -25,6 +25,18 @@ def no_db(monkeypatch):
     monkeypatch.setattr(db, "transaction", fail)
 
 
+@pytest.fixture(autouse=True)
+def new_patient(monkeypatch):
+    """By default nobody is on file with the caller's phone and date of birth."""
+    found: list[dict] = []
+
+    async def lookup(phone, born):
+        return found
+
+    monkeypatch.setattr(bookings, "_patients_with", lookup)
+    return found
+
+
 class Session(SimpleNamespace):
     """The parts of AgentSession the tools use. `said` records what code spoke."""
 
@@ -249,3 +261,53 @@ async def test_awaiting_yes_tracks_a_pending_read_back():
     assert state.awaiting_yes
     state.pending.confirmed = True
     assert not state.awaiting_yes
+
+
+async def test_a_patient_on_file_is_read_back_by_the_name_on_file(monkeypatch, new_patient):
+    """Phone and date of birth find the patient; no name is recognised from speech (#25)."""
+    new_patient.append({"id": 7, "full_name": "Kabir"})
+
+    async def name_on_file(query, *args):
+        return [{"full_name": "Kabir"}]
+
+    monkeypatch.setattr(db, "read", name_on_file)
+    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    c = ctx(state, ("user", "Nine eight one one one, two two three three three"))
+    await tools.confirm_booking(c, phone="98111 22333", birth_date="3 March 1988")
+    assert "for Kabir." in c.session.said[0]
+    assert state.verification == Verification.VERIFIED and state.patient_id == 7
+
+
+async def test_a_new_patient_is_asked_for_a_name_before_any_read_back():
+    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    c = ctx(state, ("user", "Third March nineteen eighty eight"))
+    result = out(await tools.confirm_booking(c, phone="98111 22333", birth_date="3 March 1988"))
+    assert result["error"] == "new_patient"
+    assert c.session.said == [] and state.verification == Verification.UNVERIFIED
+
+
+async def test_a_number_split_across_turns_is_read_from_the_caller_not_the_llm():
+    """W2: STT split the number and the LLM sent "two twothree"; code reads the turns."""
+    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    c = ctx(
+        state,
+        ("user", "Nine eight one one one two two"),
+        ("user", "three three three."),
+        ("user", "Third March nineteen eighty eight."),
+    )
+    garbled = "Nine eight one one one two twothree three three"
+    result = await tools.confirm_booking(
+        c, phone=garbled, birth_date="Third March nineteen eighty eight", patient_name="Kabir"
+    )
+    assert isinstance(result, llm.ToolResult)  # read back, so the number parsed
+    assert "+919811122333" in state.pending.key
+
+
+async def test_a_spelling_in_the_callers_words_fixes_the_name():
+    """W1/W2: STT heard "Kavir"; the caller spelled it, and code applies the spelling."""
+    state = CallState(call_id="AJ_t", mode=Mode.BOOKING, slot=held())
+    c = ctx(state, ("user", "It's Kavir, K a b I r."), ("user", "98111 22333, 3 March 1988"))
+    await tools.confirm_booking(
+        c, phone="98111 22333", birth_date="3 March 1988", patient_name="Kavir Sethi"
+    )
+    assert "for Kabir Sethi." in c.session.said[0]

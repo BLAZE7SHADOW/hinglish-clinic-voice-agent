@@ -52,7 +52,7 @@ class Confirmation:
     read_back_again: bool = False  # the read-back wasn't heard: speak it again, don't just ask
 
 
-def _messages(history: llm.ChatContext) -> list[llm.ChatMessage]:
+def messages(history: llm.ChatContext) -> list[llm.ChatMessage]:
     return [i for i in history.items if i.type == "message" and i.role in ("user", "assistant")]
 
 
@@ -62,20 +62,18 @@ def _words(text: str) -> str:
 
 def user_turns(history: llm.ChatContext) -> int:
     """How many caller turns the call has had so far."""
-    return sum(1 for m in _messages(history) if m.role == "user")
+    return sum(1 for m in messages(history) if m.role == "user")
 
 
 def check_yes(history: llm.ChatContext, *, after_user_turn: int, read_back: str) -> Confirmation:
     """Whether the caller's latest turn is a clear yes to `read_back`, spoken after
     `after_user_turn` and heard in full.
     """
-    messages = _messages(history)
-    last_user = next(
-        (i for i in range(len(messages) - 1, -1, -1) if messages[i].role == "user"), None
-    )
+    items = messages(history)
+    last_user = next((i for i in range(len(items) - 1, -1, -1) if items[i].role == "user"), None)
     if last_user is None or user_turns(history) <= after_user_turn:
         return Confirmation(False, "the caller hasn't answered the read-back yet")
-    before = messages[last_user - 1] if last_user > 0 else None
+    before = items[last_user - 1] if last_user > 0 else None
     # Containment, not equality: TTS-aligned text can differ in spacing and punctuation.
     if (
         before is None
@@ -85,6 +83,6 @@ def check_yes(history: llm.ChatContext, *, after_user_turn: int, read_back: str)
         return Confirmation(False, "the caller's answer wasn't to the read-back", True)
     if before.interrupted:
         return Confirmation(False, "the read-back was interrupted", True)
-    if not is_clear_yes(messages[last_user].text_content or ""):
+    if not is_clear_yes(items[last_user].text_content or ""):
         return Confirmation(False, "the caller's answer was not a clear yes; ask what they want")
     return Confirmation(True)

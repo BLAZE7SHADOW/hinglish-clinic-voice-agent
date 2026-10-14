@@ -4,12 +4,13 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 
 import asyncpg
 from livekit.agents import RunContext, llm
 
 from agent import db
-from agent.confirm import check_yes, user_turns
+from agent.confirm import check_yes, messages, user_turns
 from agent.state import Action, CallState, PendingWrite, Refused, check
 
 logger = logging.getLogger("tools")
@@ -52,6 +53,37 @@ def error(code: str, **details) -> str:
 
 def turns(context: RunContext[CallState]) -> int:
     return user_turns(context.session.history)
+
+
+CALLER_TURNS_TO_SEARCH = 4  # a number said in parts spans at most a few STT segments
+
+
+def caller_words(context: RunContext[CallState]) -> list[str]:
+    """The caller's latest turns, newest last."""
+    return [m.text_content or "" for m in messages(context.session.history) if m.role == "user"][
+        -CALLER_TURNS_TO_SEARCH:
+    ]
+
+
+def from_caller[T](
+    context: RunContext[CallState], value: str, parse: Callable[[str], T | None]
+) -> T | None:
+    """`parse(value)`, or else the same parse over the caller's own last turns.
+
+    The LLM copies numbers badly when STT split them into segments ("two twothree", LEARNING
+    #25). So if its version doesn't parse, code reads what the caller actually said: every run
+    of consecutive recent turns, the newest and shortest first. A number said in parts parses
+    only when exactly its parts are joined; a run that also takes in other numbers ("nineteen
+    eighty eight") makes it too long and fails instead of matching.
+    """
+    if value and (parsed := parse(value)) is not None:
+        return parsed
+    turns = caller_words(context)
+    for end in range(len(turns), 0, -1):
+        for start in range(end - 1, -1, -1):
+            if (parsed := parse(" ".join(turns[start:end]))) is not None:
+                return parsed
+    return None
 
 
 def language(context: RunContext[CallState]) -> str:

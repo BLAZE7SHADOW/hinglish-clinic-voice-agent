@@ -121,6 +121,24 @@ SCENARIOS: list[Scenario] = [
         events={"booking_created": 1},
     ),
     Scenario(
+        id="book_existing_patient",
+        split="dev",
+        category="happy",
+        turns=[
+            "I'd like to book an appointment with Dr. Mehta on Saturday.",
+            "The first time is fine.",
+            "My number is {phone:Rohan Joshi}.",
+            "My date of birth is {dob:Rohan Joshi}.",
+            "Yes, please book it.",
+            "Yes, that's right.",
+        ],
+        must_call=["hold_slot", "confirm_booking"],
+        events={"booking_created": 1},
+        # Found by phone and date of birth: the name on file is read back, never asked for
+        # (LEARNING #25).
+        reply_must_not=[r"(?i)\b(your|the patient's) (full )?name\b"],
+    ),
+    Scenario(
         id="book_no_clear_yes",
         split="dev",
         category="edge",

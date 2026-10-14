@@ -5,6 +5,7 @@ writes them as digits, words or a mix. Code turns them into one E.164 form so a 
 depends on how the LLM copied them. Nothing here logs the values (design §11).
 """
 
+import difflib
 import re
 
 _DIGIT_WORDS = {
@@ -78,3 +79,103 @@ def normalize_name(text: str) -> str:
     """
     words = re.findall(r"[a-zऀ-ॿ]+", text.lower())
     return " ".join(w for w in words if w not in _HONORIFICS)
+
+
+# Spelled names: "K a b I r", "k-a-b-i-r", "B for ball", "bravo". STT writes a spelling as
+# single letters, often across several segments; the LLM merges or drops them (LEARNING #25).
+_NATO = {
+    "alpha": "a", "alfa": "a", "bravo": "b", "charlie": "c", "delta": "d", "echo": "e",
+    "foxtrot": "f", "golf": "g", "hotel": "h", "india": "i", "juliet": "j", "juliett": "j",
+    "kilo": "k", "lima": "l", "mike": "m", "november": "n", "oscar": "o", "papa": "p",
+    "quebec": "q", "romeo": "r", "sierra": "s", "tango": "t", "uniform": "u", "victor": "v",
+    "whiskey": "w", "xray": "x", "yankee": "y", "zulu": "z",
+}  # fmt: skip
+MIN_SPELLED_LETTERS = 3  # "a" and "i" are also words: two letters in a row prove nothing
+
+
+def parse_spelled_name(text: str) -> str | None:
+    """The longest spelled-out word in `text` ("K a b I r" -> "Kabir"), or None.
+
+    A letter followed by "for <word>" or "as in <word>" counts once ("B for ball" = b). Of
+    several spellings the longest wins, and the later one on a tie: callers repeat a corrected
+    spelling at the end.
+    """
+    tokens = re.findall(r"[a-z]+|[.!?]", text.lower().replace("x-ray", "xray"))
+    runs: list[str] = []
+    current: list[str] = []
+    since_stop = 0  # letters since the last full stop
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        i += 1
+        if t in ".!?":
+            # "B I r. B I r." is two spellings; "K. A. B. I. R." is one, a letter per stop.
+            if since_stop > 1 and current:
+                runs.append("".join(current))
+                current = []
+            since_stop = 0
+            continue
+        letter = t if len(t) == 1 else _NATO.get(t)
+        if letter is None:
+            if current:
+                runs.append("".join(current))
+                current = []
+            since_stop = 0
+            continue
+        current.append(letter)
+        since_stop += 1
+        if tokens[i : i + 1] == ["for"]:  # "b for ball": skip the example word
+            i += 2
+        elif tokens[i : i + 2] == ["as", "in"]:
+            i += 3
+    if current:
+        runs.append("".join(current))
+    best = ""
+    for run in runs:
+        if len(run) >= MIN_SPELLED_LETTERS and len(run) >= len(best):
+            best = run
+    return best.capitalize() or None
+
+
+def apply_spelling(name: str, spelled: str | None) -> str:
+    """The caller's name with the spelled word put in place of the word it spells.
+
+    The spelling replaces the word that sounds most like it ("Kavir" -> "Kabir"), or the whole
+    name if it is one word. If no word is close, the name is the spelling: the caller spelled
+    it because the name was wrong.
+    """
+    if not spelled:
+        return name.strip()
+    words = name.split()
+    for k, word in enumerate(words):  # a partial spelling: only part of one word was wrong
+        if fixed := _splice(word, spelled):
+            words[k] = fixed
+            return " ".join(words)
+    if len(words) <= 1:
+        return spelled
+
+    def score(word: str) -> float:
+        return difflib.SequenceMatcher(None, _fold(word), _fold(spelled)).ratio()
+
+    best = max(range(len(words)), key=lambda k: score(words[k]))
+    if score(words[best]) < 0.5:
+        return spelled
+    words[best] = spelled
+    return " ".join(words)
+
+
+def _splice(word: str, part: str) -> str | None:
+    """A partial spelling fixes the end or start of a word: "Kavir" + "bir" -> "Kabir"."""
+    w, p = _fold(word), _fold(part)
+    if len(p) >= len(w):
+        return None
+    if w.endswith(p):
+        return (word[: len(word) - len(part)] + part.lower()).capitalize()
+    if w.startswith(p):
+        return (part + word[len(part) :]).capitalize()
+    return None
+
+
+def _fold(s: str) -> str:
+    """Letters that sound alike in Indian English map to one (LEARNING #25): b/v, v/w, z/j."""
+    return s.lower().translate(str.maketrans("vwz", "bvj"))

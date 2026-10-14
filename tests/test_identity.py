@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from agent.dates import CLINIC_TZ, now, parse_birth_date
-from agent.identity import normalize_name, parse_phone
+from agent.identity import apply_spelling, normalize_name, parse_phone, parse_spelled_name
 
 
 @pytest.mark.parametrize(
@@ -87,3 +87,37 @@ def test_fake_clock_only_in_eval_mode(monkeypatch):
     assert abs(now() - datetime.now(CLINIC_TZ)) < timedelta(minutes=1)  # ignored: real time
     monkeypatch.setenv("EVAL_MODE", "1")
     assert now().isoformat() == "2026-10-12T10:00:00+05:30"
+
+
+@pytest.mark.parametrize(
+    ("said", "spelled"),
+    [
+        ("K a b I r, Kavir.", "Kabir"),
+        ("k-a-b-i-r", "Kabir"),
+        ("K. A. B. I. R.", "Kabir"),
+        ("kilo alpha bravo india romeo", "Kabir"),
+        ("S for sun, E, T, H, I", "Sethi"),
+        ("No. My name is only Kavita, k a b I r. Kavir.", "Kabir"),
+        ("B I r. B I r. B for ball.", "Bir"),  # a partial spelling, fixed by apply_spelling
+        ("I am a doctor", None),
+        ("My name is Kabir", None),
+    ],
+)
+def test_spelled_names(said, spelled):
+    assert parse_spelled_name(said) == spelled
+
+
+@pytest.mark.parametrize(
+    ("name", "spelled", "result"),
+    [
+        ("Kavir", "Kabir", "Kabir"),
+        ("Kavir", "Bir", "Kabir"),  # only the end was wrong
+        ("Kavir Sethi", "Kabir", "Kabir Sethi"),
+        ("Kabir Seti", "Sethi", "Kabir Sethi"),
+        ("Kavita Sethi", "Kabir", "Kabir Sethi"),
+        ("", "Kabir", "Kabir"),
+        ("Kabir Sethi", None, "Kabir Sethi"),
+    ],
+)
+def test_a_spelling_replaces_the_word_it_spells(name, spelled, result):
+    assert apply_spelling(name, spelled) == result

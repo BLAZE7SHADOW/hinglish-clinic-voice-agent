@@ -29,16 +29,18 @@ from livekit.agents import RunContext, function_tool
 
 from agent import db, readback
 from agent.dates import CLINIC_TZ, now, parse_birth_date
-from agent.identity import normalize_name, parse_phone
+from agent.identity import apply_spelling, normalize_name, parse_phone, parse_spelled_name
 from agent.schedule import fmt_slot
 from agent.state import Action, CallState, Mode, Slot, Verification, record_verification
 from agent.tools.common import (
     DB_ERRORS,
     UNAVAILABLE,
     UNCERTAIN,
+    caller_words,
     clinic_id,
     emit,
     error,
+    from_caller,
     guard,
     language,
     read_back_gate,
@@ -148,8 +150,8 @@ async def hold_slot(context: RunContext[CallState], slot: str) -> str:
             "hold_minutes": HOLD_MINUTES,
             "next": "Call reschedule_booking with the booking's ref."
             if state.mode == Mode.RESCHEDULING
-            else "Unless the caller is verified, get name, phone and date of birth, then call "
-            "confirm_booking.",
+            else "Unless the caller is verified, get the phone number, then the date of birth, "
+            "and call confirm_booking.",
         }
     )
 
@@ -157,17 +159,19 @@ async def hold_slot(context: RunContext[CallState], slot: str) -> str:
 @function_tool
 async def confirm_booking(
     context: RunContext[CallState],
-    patient_name: str = "",
     phone: str = "",
     birth_date: str = "",
+    patient_name: str = "",
+    name_spelling: str = "",
 ) -> str:
     """Book the held time. The first call reads the booking back to the caller and books
     nothing; call it again with the same arguments after the caller's clear yes.
 
     Args:
-        patient_name: The patient's full name as the caller said it. "" if already verified.
         phone: The patient's phone number as the caller said it. "" if already verified.
         birth_date: The patient's date of birth in the caller's own words. "" if verified.
+        patient_name: The patient's full name, only if this tool asked for it (new patient).
+        name_spelling: The letters exactly as the caller spelled the name, if they did.
     """
     state = context.userdata
     slot = state.slot
@@ -178,27 +182,42 @@ async def confirm_booking(
 
     details = None
     if state.verification != Verification.VERIFIED:
-        number = parse_phone(phone)
-        born = parse_birth_date(birth_date, now().date()) if birth_date else None
-        missing = [
-            field
-            for field, value in (
-                ("name", patient_name.strip()),
-                ("phone", number),
-                ("birth_date", born),
-            )
-            if not value
-        ]
-        if missing:
+        # Phone and date of birth first (LEARNING #25): they find a patient on file, whose name
+        # is then read back instead of being recognised from speech.
+        number = from_caller(context, phone, parse_phone)
+        born = from_caller(context, birth_date, lambda t: parse_birth_date(t, now().date()))
+        if missing := [f for f, v in (("phone", number), ("birth_date", born)) if not v]:
             return error(
                 "need_patient_details",
                 missing=missing,
-                say="Ask for these, then call confirm_booking again. The time stays held.",
+                say="Ask for the first of these, one at a time, then call confirm_booking "
+                "again. The time stays held.",
             )
-        details = (patient_name.strip(), number, born)
+        try:
+            on_file = await _patients_with(number, born)
+        except DB_ERRORS + (LookupError,):
+            logger.exception("confirm_booking failed")
+            return UNAVAILABLE
+        spelled = parse_spelled_name(name_spelling) or _spelled_by_caller(context)
+        name = apply_spelling(patient_name, spelled)
+        if len(on_file) > 1 and name:  # e.g. twins sharing a phone: the name decides
+            on_file = [r for r in on_file if normalize_name(r["full_name"]) == normalize_name(name)]
+        if len(on_file) == 1:
+            # Phone plus date of birth is this clinic's verification (§3), so the name on file
+            # may be said, and the patient's later changes on this call need no new check.
+            record_verification(state, matched_patient_id=on_file[0]["id"])
+            logger.info("booking caller found on file as patient %s", state.patient_id)
+        elif not name:
+            return error(
+                "new_patient",
+                say="No patient with this phone and date of birth. Ask for the patient's full "
+                "name, then call confirm_booking again with all three.",
+            )
+        else:
+            details = (name, number, born)
 
     try:
-        if details is None:  # verified: read back the name on file
+        if details is None:  # on file: read back the name on file
             rows = await db.read("select full_name from patients where id = $1", state.patient_id)
             name = rows[0]["full_name"]
         else:
@@ -439,6 +458,22 @@ async def _find_or_add_patient(conn, cid: int, name: str, phone: str, born) -> t
         born,
     )
     return new_id, False
+
+
+async def _patients_with(phone: str, born) -> list:
+    """Patients on file with this phone and date of birth (a family can share a phone)."""
+    return await db.read(
+        "select id, full_name from patients where clinic_id = $1 and phone = $2"
+        " and birth_date = $3",
+        await clinic_id(),
+        phone,
+        born,
+    )
+
+
+def _spelled_by_caller(context: RunContext[CallState]) -> str | None:
+    """A spelling in the caller's recent turns, read by code, not by the LLM."""
+    return parse_spelled_name(" ".join(caller_words(context)))
 
 
 async def _stored(conn, booking_id: int):

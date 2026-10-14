@@ -106,8 +106,9 @@ _MODE_TASKS = {
     + _CLINIC_INFO
     + _AVAILABILITY
     + _HOLD
-    + "- Unless the caller is verified, ask for the patient's full name, phone number and date "
-    "of birth, then call confirm_booking with them.\n"
+    + "- Unless the caller is verified, ask for the phone number, then the date of birth, and "
+    "call confirm_booking. It finds patients on file; ask for the name only if it says "
+    "new_patient. If the caller spells a name, pass the letters as name_spelling.\n"
     + _WRITE.format(tool="confirm_booking", what="booking"),
     Mode.RESCHEDULING: "Your task now: move an existing appointment.\n"
     + _VERIFY
