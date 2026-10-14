@@ -54,8 +54,10 @@ _REPROMPT = {
     "question again in simpler words. One or two short sentences.",
 }
 # The call is already over in all but name: don't ask "are you still there?" after a goodbye.
+# Closing phrases only: "thank you for calling" is also how greetings start (H1 re-test hung up
+# on the greeting), so it doesn't count, and nothing counts before the caller has spoken.
 _FAREWELL = re.compile(
-    r"(?i)\b(have a (good|great|nice|wonderful|lovely) day|thank you for calling|goodbye|bye)\b"
+    r"(?i)\b(have a (good|great|nice|wonderful|lovely) (day|evening)|good ?bye|bye|take care)\b"
 )
 
 
@@ -93,7 +95,7 @@ class SilenceHandler:
 
     def _handle(self) -> None:
         session, lang = self._session, self._language
-        if _FAREWELL.search(_last_agent_text(session)):
+        if _said_goodbye(session):
             # She already said goodbye: just hang up, no second goodbye.
             logger.info("caller silent after the goodbye: ending the call")
             self._end_call()
@@ -123,11 +125,13 @@ class SilenceHandler:
             session.generate_reply(instructions=_REPROMPT[reprompt], tool_choice="none")
 
 
-def _last_agent_text(session: AgentSession) -> str:
-    for item in reversed(session.history.items):
-        if item.type == "message" and item.role == "assistant":
-            return item.text_content or ""
-    return ""
+def _said_goodbye(session: AgentSession) -> bool:
+    """The agent's last line closed the call, after the caller had said something."""
+    messages = [i for i in session.history.items if i.type == "message"]
+    if not any(m.role == "user" for m in messages):
+        return False  # only the greeting so far
+    last_agent = next((m for m in reversed(messages) if m.role == "assistant"), None)
+    return last_agent is not None and bool(_FAREWELL.search(last_agent.text_content or ""))
 
 
 def attach(

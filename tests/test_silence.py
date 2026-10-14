@@ -13,11 +13,19 @@ READ_BACK = (
 
 
 class FakeSession:
-    def __init__(self, *, pending: PendingWrite | None = None, last_agent: str = "Which time?"):
+    def __init__(
+        self,
+        *,
+        pending: PendingWrite | None = None,
+        last_agent: str = "Which time?",
+        caller_spoke: bool = True,
+    ):
         self.userdata = CallState(call_id="AJ_t", pending=pending)
-        self.history = llm.ChatContext(
-            items=[llm.ChatMessage(role="assistant", content=[last_agent])]
-        )
+        items = [llm.ChatMessage(role="assistant", content=["Namaste, how can I help?"])]
+        if caller_spoke:
+            items.append(llm.ChatMessage(role="user", content=["Book me with Doctor Sharma."]))
+        items.append(llm.ChatMessage(role="assistant", content=[last_agent]))
+        self.history = llm.ChatContext(items=items)
         self.said: list[str] = []
         self.replies: list[dict] = []
         self.away_resets = 0
@@ -121,3 +129,16 @@ def test_silence_handling_can_be_switched_off(monkeypatch):
     assert not silence.enabled()
     monkeypatch.delenv("SILENCE_REPROMPT")
     assert silence.enabled()
+
+
+def test_the_greeting_is_never_taken_for_a_goodbye():
+    """H1: "thank you for calling" opens the greeting; silence after it must reprompt."""
+    greeting = "Hello, thank you for calling Sharma Family Clinic, this is Simran."
+    s = FakeSession(last_agent=greeting, caller_spoke=False)
+    h, ended = handler(s)
+    h.on_user_state(away())
+    assert len(s.replies) == 1 and ended == []
+    s = FakeSession(last_agent="Thank you for calling Sharma Family Clinic, how can I help?")
+    h, ended = handler(s)
+    h.on_user_state(away())
+    assert len(s.replies) == 1 and ended == []
