@@ -1171,3 +1171,143 @@ gap. Teams keep the transcript for every eval run for exactly this reason. The r
 it in the results file (synthetic data only, git-ignored). Scripted callers break when the agent
 asks a reasonable question the script didn't expect. That's why voice-agent eval tools move to
 simulated callers, an LLM playing the patient with a goal and a persona (planned for week 6).
+
+## 24. Two silent bugs found by the first week 2 voice call
+
+**What happened.** The warm-up call logged `STT keyterms not loaded: module 'agent.tools' has no
+attribute 'CLINIC_NAME'`. In W1 the agent asked for the date of birth twice although the caller
+said it clearly ("Third March nineteen eighty eight").
+
+**Mechanism.**
+- *Keyterms:* when `tools.py` became the `tools/` package, `CLINIC_NAME` moved to
+  `tools/common.py`, but `vocabulary.py` still read `tools.CLINIC_NAME`. Keyterms fail open by
+  design, so every call since the split worked without them. Telemetry still labelled the calls
+  `stt_keyterms=on`, because the label comes from `.env`, not from what was applied.
+- *Date of birth:* Deepgram writes spoken dates as words. `parse_birth_date` only read digits,
+  so `confirm_booking` refused the real answer. The second try passed only because the LLM
+  rewrote the words as "3 March 1988" itself: the LLM normalising data that code should.
+
+**Options.** Re-export names from the package `__init__` (hides where they live) or import from
+the module that owns them. For dates: ask the LLM to send digits (a prompt rule the LLM may
+ignore), or parse spoken numbers in code (deterministic, testable).
+
+**Choice.** Import `CLINIC_NAME` from `tools.common`. Spoken day, ordinal and year words
+("twenty-first", "nineteen eighty eight", "two thousand and five", "nineteen oh nine") are turned
+into digits in code before parsing.
+
+**Verification.** A regression test loads keyterms through the real package. Eight spoken
+date-of-birth cases pass. After the restart the log shows `STT keyterms applied: 7 terms`, and in
+W4–W6 every spoken birth date was accepted on the first try. 217 tests pass.
+
+**In industry.** "Fail open" is right for a quality feature on the hot path, but a fail-open
+path needs a metric, or it fails open forever without anyone noticing. Telemetry should record
+what was applied, not what was configured. Speech-to-structure normalisation (numbers, dates,
+spelled letters) belongs in deterministic code with tests: voice platforms ship "inverse text
+normalisation" exactly because LLMs are inconsistent at it.
+
+## 25. "Kabir" heard as "Kavita": open-ended names don't survive STT
+
+**What happened.** In W1 and W2 the caller said "Kabir" and spelled it ("K a b I r", "B for
+ball"). STT heard "Kavita", "Kavir", "Kavita k a b I r". The agent wrote "Kavita Kabir" and read
+it back, and it took 4–6 turns to get to "Kabir". The read-back stayed correct throughout: a yes
+to "Kavita Kabir" would have created a patient with exactly that name.
+
+**Mechanism.**
+1. Keyterm bias: the doctor list (boosted since #24 was fixed) contains "Kavita Iyer", and
+   keyterm prompting pulls similar-sounding speech toward boosted words. Deepgram users report
+   the same over-matching ([discussion #1233](https://github.com/orgs/deepgram/discussions/1233)).
+2. B and V are close in Indian English, so "Kabir" vs "Kavir" is a real acoustic ambiguity.
+3. The spelling reached the LLM as fragments split across STT segments, and the LLM ignored or
+   merged them. Nothing in code reads spelled letters.
+4. The flow asks for the name first, as an open-ended field, before the phone number that would
+   tell us which names are on file.
+The same call shows the phone-number version of point 3: the LLM joined STT fragments into "two
+twothree", which code rejected.
+
+**Options.**
+- Spell back every name (call-centre practice; one operator reports it catches errors in about
+  15% of calls, [AnSer](https://www.anser.com/qa/allnames)). It costs a turn and TTS reads
+  single letters poorly ([Retell](https://community.retellai.com/t/agent-confirming-name-and-email-are-garbling-slurring-words/1656)).
+- Phone number first, then date of birth. If they match a patient, *confirm* the name on file
+  ("Is this for Kabir?") instead of capturing it: a closed choice, not open recognition. Systems
+  that narrow recognition to the caller's known records do this
+  ([US6088429](https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/6088429)).
+- Parse spelled letters ("K a b i r", "B for ball", NATO words) in code, like phone numbers.
+- Scope keyterms to the moment: doctor names while choosing a doctor, not while the caller says
+  their own name.
+- Take the phone number and date of birth from the caller's transcript in code, not from the
+  LLM's arguments.
+
+**Choice (next step, not yet built).** Phone first, then date of birth, then confirm the name on
+file; spell back only for a new patient; parse spelled letters in code; pause doctor keyterms
+during name capture. One change per step, with a voice re-test (W1–W3).
+
+**In industry.** Contact centres treat names as the least reliable field, and identify by
+number plus a second factor (ANI/caller ID, date of birth, account number). Names are verified
+against the record, not transcribed from scratch.
+
+## 26. The backchannel filter drops "okay" but the speech doesn't resume
+
+**What happened.** Call 10: a soft "Oh, okay." stopped the agent mid-sentence, and she didn't
+continue until the caller said "Just continue". Later in the same call another "Okay." was
+handled correctly: paused, then resumed.
+
+**Mechanism.** From the worker log:
+- The adaptive interruption model fired 1.32 s after the caller started speaking (probability
+  0.747 > 0.656) and paused the audio.
+- The filter worked: `backchannel ignored`, then `backchannel turn dropped`.
+- But resuming paused speech is armed by the VAD end-of-speech event (`on_end_of_speech`), and
+  only if speech is already paused at that moment. The detection was late, so the VAD
+  end-of-speech had most likely already fired before the pause began. Nothing was left to arm the
+  resume timer: the filter only arms it when `speaking is False` is passed, which this path didn't
+  do. The speech stayed paused.
+- The second "Okay." came after LiveKit's interruption quota ran out (`quota exceeded`, 429)
+  and the session fell back to VAD interruption. There the pause starts at speech start, so
+  end-of-speech armed the timer and the speech resumed (`resumed false interrupted speech`).
+
+**Second finding: the adaptive interruption quota.** LiveKit Cloud emailed "100% of concurrent
+barge-in requests per minute used" (limit 45 per minute on this project). The detector sends a
+request every 0.1 s (`detection_interval`) while the caller and agent overlap, so one call with
+several overlaps can use the whole minute's budget. After that the session silently uses VAD
+interruption for the rest of the call, so behaviour changes mid-test.
+
+**Options.**
+- In the filter, arm the resume whenever speech is paused and the caller isn't speaking
+  (`session.user_state != "speaking"`), instead of relying on `speaking is False`.
+- Raise `detection_interval` to cut quota use (slower detection), or use VAD interruption with
+  the filter only (no quota, more false pauses).
+- A plan with a higher quota (cost).
+
+**Choice (week 3 step, behind a flag).** Fix the resume arming first and re-test with call 10
+(several runs). Log every adaptive-to-VAD fallback as a telemetry field, so latency rows show
+which interruption mode the call actually used. Decide about the quota from measured requests
+per call.
+
+**In industry.** Barge-in systems separate "pause" from "stop": pause at the first sign of
+speech, and stop only once the words show an intent to take the turn. Every path into "paused"
+needs a way out. A stuck pause is the worst failure, because the caller hears silence and doesn't
+know whose turn it is.
+
+## 27. Half the week 2 turns waited the full 2.5 s end-of-turn delay
+
+**What happened.** The voice test's end of turn was p50 2,500 ms (27 of 52 turns waited the
+maximum), against 578 ms in the week 1 baseline. Voice-to-voice rose to p50 3,829 ms.
+
+**Mechanism.** The turn detector scores the transcript text. Week 2 calls are mostly phone
+numbers, dates of birth, names and short answers ("Doctor Sharma", "Five thirty is fine."). It
+scores these 0.07–0.33, below the 0.36 "unlikely" threshold, so LiveKit waits
+`max_endpointing_delay` (2.5 s). For a phone number said in groups that wait is useful: STT split
+"nine zero zero zero zero … two" into 3–8 segments, and an early end of turn would cut the
+number. For a complete short answer it's dead air.
+
+**Options.** Phase-aware endpointing: when the agent has just asked for a number or a date,
+allow a long wait; after a yes/no question or a slot choice, a short one. Or a lower
+`max_endpointing_delay` everywhere (cuts digit sequences), or the audio-aware cloud model (no
+gain in E7, #10).
+
+**Choice.** This is the planned week 3 ENDPOINTING step, now with data showing where the time
+goes. Measure it by turn type (number, date, short answer, sentence).
+
+**In industry.** Production voice agents set the endpointing timeout per dialogue state: long
+for "please say your account number", short after "is that right?". IVR systems have done this
+for decades ("incomplete timeout" per grammar).

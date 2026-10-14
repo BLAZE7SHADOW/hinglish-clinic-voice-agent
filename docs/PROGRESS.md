@@ -1,6 +1,6 @@
 # Progress
 
-## Current status (2026-10-12, week 2 · steps 1–6 built, not yet run)
+## Current status (2026-10-14, week 2 · built and voice-tested; week 3 next)
 
 Done:
 - Repo scaffold: `agent/`, `db/migrations/`, `scripts/`, `docs/`; `pyproject.toml` + `uv.lock` (Python 3.12, livekit-agents 1.8.6); `.env.example`; `CLAUDE.md`.
@@ -185,6 +185,29 @@ row is owed at the next measured run.
 - The `hold_slot` hint now names `reschedule_booking` in rescheduling mode.
 - **Not run:** the hold-out split (kept for reporting) and the voice test.
 
+## Week 2 voice test (2026-10-14)
+
+- README added for the resume (`README.md`).
+- 10 of 11 calls run (W3 skipped until the name fix). **W1, W2, W4, W5, W6, W7 correct; wrong
+  actions 0; nothing revealed before verification; no Sarvam fallback.** Every write in `events`
+  matches the request: 2 bookings, 1 reschedule (linked by `replaces_booking_id`), 1 cancel of the
+  right one of two, 2 callbacks.
+- Fixed during the session (LEARNING #24): STT keyterms never loaded since the tools split
+  (stale `tools.CLINIC_NAME`), and spoken dates of birth weren't parsed. 217 tests pass.
+- `LATENCY_LOG.md` row "Week 2 voice baseline": V2V p50 3,829 / p95 6,358 ms. **EoT p50 2.5 s:
+  27 of 52 turns waited the full delay** (#27).
+- Findings for week 3:
+  - **Names:** "Kabir" heard as "Kavita" (keyterm bias + B/V + spelling not parsed) (#25).
+  - **Read-back re-reads:** a yes over the read-back forced a re-read, twice in W2.
+  - **Backchannel:** the filter drops "okay" but paused speech may not resume when the
+    adaptive detector fires late (#26). LiveKit's adaptive interruption quota (45/min) ran out.
+  - **Phone numbers:** the LLM joins STT fragments badly ("two twothree"); parse from the
+    transcript in code.
+  - W6: the callback goes to the number the unverified caller claimed (the patient's own):
+    staff must verify again on that call (THREAT_MODEL).
+  - W7: "shortly" sounds like a time promise.
+- Worker log: `logs/worker-2026-10-14.log` (git-ignored, contains transcripts).
+
 ## Next task
 
 1. ~~Create the eval sandbox~~ (done 2026-10-12): Docker container `clinic-eval-db` (Postgres
@@ -194,6 +217,13 @@ row is owed at the next measured run.
 2. ~~Run pytest and dev evals~~ (done 2026-10-12: 208 pass, 13 of 13).
 3. ~~Apply migration 003~~ (done 2026-10-12 on Supabase). Next: a short voice test of book,
    reschedule and cancel, and the backchannel calls 5, 8 and 10.
-4. **Week 3:** E1/E6, the filler line during tool calls, phase-aware endpointing.
+4. ~~Voice test~~ (done 2026-10-14, above).
+5. **Week 3, one change at a time (flag → text evals → voice calls → LATENCY_LOG row):**
+   1. Name and number capture (#25): phone first, confirm the name on file, parse spelled
+      letters and numbers from the transcript in code, scope keyterms. Re-test W1–W3.
+   2. Backchannel resume fix (#26) and an interruption-mode field in telemetry. Re-test call 10.
+   3. Phase-aware endpointing (#27).
+   4. Read-back re-reads: measure, then decide whether a yes in the last words counts.
+   5. The filler line during tool calls; E1 (LLM comparison).
 
 Still open from week 1: `AUDIO_PATH.md` (yours to write), `DECISIONS.md`, and the day 6 items.

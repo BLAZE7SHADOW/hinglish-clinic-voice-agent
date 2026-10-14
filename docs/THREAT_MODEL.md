@@ -62,3 +62,7 @@ the full OWASP mapping; week 7 adds the staff view.
 - **The database role isn't least-privilege yet:** the agent uses the owner connection.
 - **Callback requests are deduplicated only in memory** for one call. A retry after an uncertain
   timeout can write a second event, which staff would see as a duplicate.
+- **A callback after failed verification goes to the claimed number.** In the voice test (W6)
+  the agent used the phone number the unverified caller had given, which is the real patient's.
+  That is safe for the patient, but the staff member calling back must verify again and must not
+  assume the earlier caller was the patient.
