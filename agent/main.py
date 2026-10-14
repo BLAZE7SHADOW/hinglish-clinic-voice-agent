@@ -17,6 +17,7 @@ from agent import (
     backchannel,
     db,
     endpointing,
+    filler,
     prompts,
     providers,
     silence,
@@ -108,6 +109,14 @@ async def entrypoint(ctx: JobContext) -> None:
             )
 
         ctx.add_shutdown_callback(_silence_summary)
+
+    if filler.enabled():  # FILLER=on: "one moment" while a lookup runs (agent/filler.py)
+        fill = filler.attach(session, language=language)
+
+        async def _filler_summary() -> None:
+            logger.info("filler lines this call: %d", fill.count)
+
+        ctx.add_shutdown_callback(_filler_summary)
 
     await session.start(room=ctx.room, agent=Receptionist(language))
     if vocabulary.enabled():  # E9: per-clinic names as STT keyterms, loaded without blocking

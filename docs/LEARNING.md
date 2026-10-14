@@ -1510,3 +1510,28 @@ flag off and on in the end-of-step session.
 **In industry.** Confirmation is about what the caller heard, not what the agent sent. Systems
 with word-level playback timing (TTS-aligned transcripts) use it to decide whether an
 interrupted prompt counts as delivered.
+
+## 34. A filler line during lookups, without breaking the read-back rule
+
+**Problem.** Tool turns cost two LLM calls (#14): about 3.9 s p50 against 2.2 s. "Book me with
+Doctor Sharma tomorrow evening" took 13–15 s to the first answer in the R3 and H3 calls (switch
+mode, find slots, then the reply). The caller hears nothing in between.
+
+**Options.** (a) An LLM preamble ("let me check") in the prompt: free in code, but not
+guaranteed and adds prompt tokens. (b) LiveKit's `RunContext.with_filler()`: built for a slow
+step *inside* a tool; it waits for the session to be idle, and the agent is "thinking" during
+the second LLM call, so it would not fire there. (c) A code-driven filler at tool start.
+
+**Choice (c), `agent/filler.py`, `FILLER=off` by default.** On the first lookup tool of a
+caller turn, after `FILLER_DELAY_S` (0.3 s) and only if nothing is playing, say one short line.
+Never for write tools (they speak their own read-back), never twice in a turn, and with
+`add_to_chat_ctx=False` so it can't become "the message before the yes" that `confirm.py`
+checks. Lines rotate; Hinglish lines exist for week 4.
+
+**Verification.** Unit tests: once per turn, out of history, none before a read-back, none if
+the LLM already speaks, cancelled if the reply starts first. Not verified yet: LiveKit's playout
+order (filler before the tool reply) in a real call; the voice session checks it from log
+timestamps, and compares time to first audio and V2V with the flag off and on.
+
+**In industry.** Acknowledge immediately, answer when ready. Contact-centre agents say "one
+moment" for the same reason; voice platforms ship "filler" or "thinking" audio for tool calls.
