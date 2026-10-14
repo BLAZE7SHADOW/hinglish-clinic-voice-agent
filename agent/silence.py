@@ -25,6 +25,7 @@ import logging
 import os
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from livekit.agents import (
     AgentSession,
@@ -37,10 +38,40 @@ from agent.state import CallState
 
 logger = logging.getLogger("silence")
 
-SILENCE_S = 8.0  # after the agent stops talking; long enough to think, short enough to notice
-MAX_REPROMPTS = 2  # then the third silence ends the call
-TRANSCRIPTION_TIMEOUT_S = 2.0  # caller spoke but no words came back from STT
 MIN_LOST_SPEECH_S = 0.25  # shorter VAD blips are noise (a cough, a click), not a lost answer
+
+
+@dataclass(frozen=True)
+class Settings:
+    """Tunable per deployment in .env. Bounds stop a typo from making the agent nag every second
+    or never hang up; a bad value fails at startup, not mid-call."""
+
+    # Silence after the agent stops talking: long enough to think, short enough to notice.
+    timeout_s: float = 8.0
+    # Reprompts before the goodbye: Dialogflow CX's guidance hands off at about the third
+    # no-input, so 2 reprompts + the goodbye.
+    max_reprompts: int = 2
+    # Caller spoke (VAD) but no words came back from STT for this long: ask again.
+    transcription_timeout_s: float = 2.0
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        settings = cls(
+            timeout_s=float(os.environ.get("SILENCE_TIMEOUT_S", cls.timeout_s)),
+            max_reprompts=int(os.environ.get("SILENCE_MAX_REPROMPTS", cls.max_reprompts)),
+            transcription_timeout_s=float(
+                os.environ.get("TRANSCRIPTION_TIMEOUT_S", cls.transcription_timeout_s)
+            ),
+        )
+        for name, value, low, high in (
+            ("SILENCE_TIMEOUT_S", settings.timeout_s, 3, 30),
+            ("SILENCE_MAX_REPROMPTS", settings.max_reprompts, 0, 5),
+            ("TRANSCRIPTION_TIMEOUT_S", settings.transcription_timeout_s, 1, 10),
+        ):
+            if not low <= value <= high:
+                raise ValueError(f"{name}={value} is outside {low}..{high}")
+        return settings
+
 
 _STILL_THERE = {"en": "Are you still there?", "hinglish": "Hello, kya aap line par hain?"}
 _NO_RUSH = {"en": "No rush.", "hinglish": "Koi jaldi nahi hai."}
@@ -72,8 +103,14 @@ def enabled() -> bool:
 
 class SilenceHandler:
     def __init__(
-        self, session: AgentSession[CallState], *, language: str, end_call: Callable[[], None]
+        self,
+        session: AgentSession[CallState],
+        *,
+        language: str,
+        end_call: Callable[[], None],
+        settings: Settings | None = None,
     ) -> None:
+        self.settings = settings or Settings()
         self._session = session
         self._language = language
         self._end_call = end_call
@@ -109,7 +146,7 @@ class SilenceHandler:
             logger.info("caller silent after the goodbye: ending the call")
             self._end_call()
             return
-        if self.silences > MAX_REPROMPTS:
+        if self.silences > self.settings.max_reprompts:
             logger.info("caller silent: ending the call", extra={"silences": self.silences})
             handle = session.say(_GOODBYE[lang], allow_interruptions=False)
             handle.add_done_callback(lambda _: self._end_call())
@@ -119,7 +156,9 @@ class SilenceHandler:
             "caller silent: reprompt",
             extra={"silences": self.silences, "awaiting_yes": session.userdata.awaiting_yes},
         )
-        self._ask_again(_STILL_THERE if self.silences == 1 else _NO_RUSH, self.silences)
+        # The first reprompt asks again; every later one rephrases more simply.
+        first = self.silences == 1
+        self._ask_again(_STILL_THERE if first else _NO_RUSH, 1 if first else 2)
         # LiveKit doesn't re-arm the away timer while the caller is "away"; this does, and it
         # starts counting once the reprompt has been spoken.
         session.reset_away_timer()
@@ -144,9 +183,13 @@ def _said_goodbye(session: AgentSession) -> bool:
 
 
 def attach(
-    session: AgentSession[CallState], *, language: str, end_call: Callable[[], None]
+    session: AgentSession[CallState],
+    *,
+    language: str,
+    end_call: Callable[[], None],
+    settings: Settings,
 ) -> SilenceHandler:
-    handler = SilenceHandler(session, language=language, end_call=end_call)
+    handler = SilenceHandler(session, language=language, end_call=end_call, settings=settings)
     session.on("user_state_changed", handler.on_user_state)
     session.on("user_input_transcribed", handler.on_transcript)
     session.on("user_transcription_timeout", handler.on_transcription_timeout)

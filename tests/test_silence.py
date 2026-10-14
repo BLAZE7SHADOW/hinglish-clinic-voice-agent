@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 from livekit.agents import (
     UserInputTranscribedEvent,
     UserStateChangedEvent,
@@ -164,3 +165,26 @@ def test_the_greeting_is_never_taken_for_a_goodbye():
     h, ended = handler(s)
     h.on_user_state(away())
     assert len(s.replies) == 1 and ended == []
+
+
+def test_the_reprompt_count_is_a_setting():
+    s = FakeSession()
+    h = silence.SilenceHandler(
+        s, language="en", end_call=lambda: None, settings=silence.Settings(max_reprompts=4)
+    )
+    for _ in range(4):
+        h.on_user_state(away())
+    assert len(s.replies) == 4 and s.said == []  # still reprompting, later ones rephrased
+    assert "simpler" in s.replies[-1]["instructions"]
+    h.on_user_state(away())
+    assert "Goodbye" in s.said[-1]
+
+
+def test_settings_come_from_env_and_are_bounded(monkeypatch):
+    monkeypatch.setenv("SILENCE_TIMEOUT_S", "12")
+    monkeypatch.setenv("SILENCE_MAX_REPROMPTS", "3")
+    monkeypatch.setenv("TRANSCRIPTION_TIMEOUT_S", "2.5")
+    assert silence.Settings.from_env() == silence.Settings(12.0, 3, 2.5)
+    monkeypatch.setenv("SILENCE_TIMEOUT_S", "1")  # would nag every second
+    with pytest.raises(ValueError, match="SILENCE_TIMEOUT_S"):
+        silence.Settings.from_env()

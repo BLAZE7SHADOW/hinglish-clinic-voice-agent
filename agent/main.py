@@ -44,6 +44,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
     # Every stage is passed explicitly so the provider choices are visible in code. STT, LLM and
     # TTS each have a backup provider (providers.py) so one provider's outage doesn't end the call.
+    quiet = silence.Settings.from_env()  # SILENCE_* and TRANSCRIPTION_TIMEOUT_S in .env
     session = AgentSession[CallState](
         # Typed call state that every tool's guard checks (agent/state.py).
         userdata=CallState(call_id=ctx.job.id),
@@ -53,9 +54,9 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=providers.build_llm_with_fallback(),
         tts=providers.build_tts_with_fallback(),
         # How long both sides may be silent before the caller counts as "away" (agent/silence.py)
-        user_away_timeout=silence.SILENCE_S if silence.enabled() else None,
+        user_away_timeout=quiet.timeout_s if silence.enabled() else None,
         # Speech VAD heard but STT returned no words for: ask again (agent/silence.py)
-        transcription_timeout=silence.TRANSCRIPTION_TIMEOUT_S if silence.enabled() else None,
+        transcription_timeout=quiet.transcription_timeout_s if silence.enabled() else None,
     )
 
     sink = telemetry.attach(
@@ -80,7 +81,9 @@ async def entrypoint(ctx: JobContext) -> None:
     ctx.add_shutdown_callback(_release_holds)
 
     if silence.enabled():  # re-engage a silent caller, then end the call politely
-        silent = silence.attach(session, language=language, end_call=lambda: _hang_up(ctx))
+        silent = silence.attach(
+            session, language=language, end_call=lambda: _hang_up(ctx), settings=quiet
+        )
 
         async def _silence_summary() -> None:
             logger.info(
