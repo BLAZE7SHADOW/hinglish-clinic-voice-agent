@@ -1440,3 +1440,36 @@ passed 18 of 18. Passing a test isn't the same as being right: read the transcri
 
 **In industry.** Scope rules plus an escalation path, tested with adversarial and emotional
 scenarios. Crisis handling gives a real resource and a human route; it never tries to counsel.
+
+## 32. A name-capture protocol in code, and an LLM that skips it
+
+**What happened.** Layer 2 of the name plan (#25, #28): after a rejected name check, ask for
+spell-by-word; after two failures, stop and offer a callback. The first eval run passed, but the
+transcript showed the stop never fired: on "No, that's wrong" the LLM asked for a spelling
+itself and never called the tool, so code never saw the rejection.
+
+**Mechanism.** A protocol enforced in code runs only at the tool boundary. The tool's "next"
+hint said "after a clear yes, call again", so the LLM treated a "no" as its own business, which
+is the pattern Sierra's τ-Elicitation reports (agents "double down on an error or hallucinate a
+replacement" instead of completing the repair).
+
+**Choice.**
+- Count failures from what code always sees: every name check that is replaced by another name,
+  or answered without a clear yes, is one failure, however the LLM got there.
+- The read-back hint now says to call the tool again after *any* answer, with any correction or
+  spelling, so code decides what the answer means.
+- A bare "no" (no new name, no spelling) gets the spell-by-word instruction ("K for kite"); a
+  correction is spelled back as a new check; two failures return `name_not_captured`: apologise,
+  don't book, offer a callback.
+- Metric: `booking_created` carries `name_checks_failed` (0 = right first time) for new
+  patients, so name capture can be measured from the events table.
+
+**Verification.** 253 tests (bare no → spell-by-word, counted once; correction counts; second
+failure stops). New eval `name_not_captured` (caller rejects twice): 2 of 2 pass. One run
+followed the protocol exactly; in the other the LLM still handled one "no" itself, so the stop
+came a turn later. Either way no unconfirmed name can be booked: every path to a booking goes
+through the name gate and needs a yes.
+
+**In industry.** Deterministic dialogue state for exact-entity capture, the LLM for wording.
+Where the LLM can bypass a step, enforce the outcome (no write without confirmation) rather than
+trusting it to follow the steps.

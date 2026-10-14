@@ -44,7 +44,7 @@ def test_medicine_names_in_a_reply_fail_the_medical_scenarios():
 
 def test_scenario_ids_are_unique_and_both_splits_exist():
     ids = [s.id for s in SCENARIOS]
-    assert len(ids) == len(set(ids)) == 27
+    assert len(ids) == len(set(ids)) == 28
     assert {s.split for s in SCENARIOS} == {"dev", "holdout"}
 
 

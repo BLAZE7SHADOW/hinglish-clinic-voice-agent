@@ -140,8 +140,11 @@ def _speak(context: RunContext[CallState], pending: PendingWrite, tool: str) -> 
         json.dumps(
             {
                 "read_back_spoken": pending.text,
-                "next": f"Wait for the caller's answer. After a clear yes, call {tool} again "
-                "with the same arguments. Never repeat the read-back yourself.",
+                # Code decides what an answer means, so every answer comes back to the tool:
+                # a "no" handled by the LLM alone skips the capture protocol (LEARNING #32).
+                "next": f"Wait for the caller's answer, then call {tool} again with the same "
+                "arguments plus any correction or spelling they gave, whatever they answered. "
+                "Never repeat the read-back yourself.",
             }
         ),
         reply_required=False,

@@ -350,3 +350,41 @@ async def test_a_name_correction_repeats_only_the_name():
     (again,) = no.session.said
     assert again.startswith("I have the patient's name as Kabir,")
     assert "Doctor" not in again
+
+
+async def test_a_rejected_name_asks_for_spell_by_word_then_a_person_takes_over():
+    """#32: a fixed capture protocol, not the LLM's own repair loop."""
+    state = booking_state(confirmed_name=None)
+    turns = [("user", "Kavita")]
+    first = ctx(state, *turns)
+    await tools.confirm_booking(first, **(DETAILS | {"patient_name": "Kavita"}))
+    turns += [("assistant", first.session.said[0]), ("user", "No, that's wrong")]
+
+    no = ctx(state, *turns)
+    result = out(await tools.confirm_booking(no, **(DETAILS | {"patient_name": "Kavita"})))
+    assert result["error"] == "name_not_confirmed" and "K for kite" in result["say"]
+    assert state.name_checks_failed == 1 and no.session.said == []
+
+    turns += [("assistant", "Could you spell it, like K for kite?"), ("user", "K for kite...")]
+    spelled = ctx(state, *turns)
+    await tools.confirm_booking(spelled, **(DETAILS | {"patient_name": "Kavir"}))
+    assert spelled.session.said[0].startswith("I have the patient's name as Kavir")
+    assert state.name_checks_failed == 1  # the "no" was counted once, not again here
+
+    turns += [("assistant", spelled.session.said[0]), ("user", "No, still wrong")]
+    result = out(
+        await tools.confirm_booking(ctx(state, *turns), **(DETAILS | {"patient_name": "Kavir"}))
+    )
+    assert result["error"] == "name_not_captured" and "request_callback" in result["say"]
+
+
+async def test_a_direct_correction_counts_as_a_failed_check():
+    state = booking_state(confirmed_name=None)
+    first = ctx(state, ("user", "Kavita"))
+    await tools.confirm_booking(first, **(DETAILS | {"patient_name": "Kavita"}))
+    fixed = ctx(
+        state, ("user", "Kavita"), ("assistant", first.session.said[0]), ("user", "It's Kabir")
+    )
+    await tools.confirm_booking(fixed, **(DETAILS | {"patient_name": "Kabir"}))
+    assert state.name_checks_failed == 1
+    assert fixed.session.said[0].startswith("I have the patient's name as Kabir")

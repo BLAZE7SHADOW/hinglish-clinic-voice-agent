@@ -82,6 +82,7 @@ class CallState(BaseModel):
     # A new patient's name, once the caller said yes to it spelled back (LEARNING #28). The
     # booking read-back comes only after this, so a name correction never repeats the slot.
     confirmed_name: str | None = None
+    name_checks_failed: int = 0  # the caller said no to, or corrected, a name check
     callback_requested: bool = False
     misunderstandings: int = 0  # repeated "sorry?" leads to handoff (design §7.4)
     history: list[str] = Field(default_factory=list)  # mode changes, for the event log

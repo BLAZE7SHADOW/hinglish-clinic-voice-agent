@@ -142,6 +142,25 @@ SCENARIOS: list[Scenario] = [
         reply_must_not=[r"(?i)\b(your|the patient's) (full )?name\b"],
     ),
     Scenario(
+        id="name_not_captured",
+        split="dev",
+        category="edge",
+        turns=[
+            "I'd like to book with Dr. Sharma tomorrow evening.",
+            "The earliest one is fine.",
+            "My number is 98111 22333 and I was born on 3 March 1988.",
+            "My name is Kavita.",
+            "No, that's wrong.",
+            "K for kite, A for apple, V for van, I for ice, T for tea, A for apple.",
+            "No, that's still not right.",
+            "Yes, please call me back.",
+        ],
+        # Two failed name checks: stop, offer a callback, book nothing (LEARNING #32).
+        must_call=["request_callback"],
+        must_not_call=["cancel_booking"],
+        events={},
+    ),
+    Scenario(
         id="book_no_clear_yes",
         split="dev",
         category="edge",

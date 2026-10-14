@@ -25,9 +25,10 @@ import logging
 import re
 
 import asyncpg
-from livekit.agents import RunContext, function_tool
+from livekit.agents import RunContext, function_tool, llm
 
 from agent import db, readback
+from agent.confirm import check_yes
 from agent.dates import CLINIC_TZ, now, parse_birth_date
 from agent.identity import apply_spelling, normalize_name, parse_phone, parse_spelled_name
 from agent.schedule import fmt_slot
@@ -44,6 +45,7 @@ from agent.tools.common import (
     guard,
     language,
     read_back_gate,
+    turns,
 )
 
 logger = logging.getLogger("tools")
@@ -225,15 +227,9 @@ async def confirm_booking(
     except DB_ERRORS:
         logger.exception("confirm_booking failed")
         return UNAVAILABLE
-    if details is not None and state.confirmed_name != name:
-        # A new patient's name is checked on its own first, spelled back: a correction then
-        # repeats only the name, and the booking is read back once, at the end (LEARNING #28).
-        check = readback.name_check(name, language(context))
-        if gate := read_back_gate(
-            context, Action.CREATE_BOOKING, f"name|{name}", check, "confirm_booking"
-        ):
-            return gate
-        state.confirmed_name = name
+    # A new patient's name is confirmed on its own first (LEARNING #28, #32).
+    if details is not None and state.confirmed_name != name and (gate := _name_gate(context, name)):
+        return gate
     text = readback.booking(slot.doctor_name, slot.starts_at, name, language(context))
     key = f"{slot.hold_id}|{details or state.patient_id}"
     if gate := read_back_gate(context, Action.CREATE_BOOKING, key, text, "confirm_booking"):
@@ -278,6 +274,8 @@ async def confirm_booking(
                     patient_id=patient_id,
                     doctor_id=slot.doctor_id,
                     starts_at=slot.starts_at,
+                    # per-field capture metric (LEARNING #32): 0 = name right first time
+                    name_checks_failed=state.name_checks_failed if details else None,
                 )
             # status == "confirmed": a repeat of a confirm that already went through. Same row.
             stored = await _stored(conn, slot.hold_id)
@@ -467,6 +465,60 @@ async def _find_or_add_patient(conn, cid: int, name: str, phone: str, born) -> t
         born,
     )
     return new_id, False
+
+
+MAX_NAME_CHECK_FAILURES = 2  # then a person takes over (LEARNING #32)
+SPELL_BY_WORD = (
+    "Ask the caller to spell the name letter by letter with a word for each letter, like 'K "
+    "for kite, A for apple', then call confirm_booking again with the letters as name_spelling."
+)
+
+
+def _name_gate(context: RunContext[CallState], name: str) -> str | llm.ToolResult | None:
+    """None once the caller has said yes to `name` spelled back; until then, what to return.
+
+    A new patient's name is checked on its own, before the booking read-back (LEARNING #28).
+    Capture follows a fixed protocol in code, not the LLM's own repair (#32). Every name check
+    that ends without a clear yes counts as one failure, however the LLM handled the answer (it
+    often asks for a spelling itself instead of calling the tool). After a bare "no" (no new
+    name, no spelling), ask for spell-by-word ("K for kite"); a correction is simply spelled
+    back as a new check. After two failures,
+    stop and offer a callback instead of looping or booking a name nobody confirmed.
+    """
+    state = context.userdata
+    key = f"name|{name}"
+    p = state.pending
+    if p is not None and p.key.startswith("name|") and not p.confirmed:
+        answered = turns(context) > p.after_user_turn
+        if p.key == key and answered:
+            failed = not check_yes(
+                context.session.history, after_user_turn=p.after_user_turn, read_back=p.text
+            ).ok
+        else:
+            failed = p.key != key  # a corrected name replaces an unconfirmed check
+        if failed:
+            state.name_checks_failed += 1
+            since_check = caller_words(context)[-(turns(context) - p.after_user_turn) :]
+            spelled = parse_spelled_name(" ".join(since_check)) is not None
+            state.pending = None  # counted once; the next check starts fresh
+            rejected_only = p.key == key  # a bare "no": nothing new to spell back yet
+            if state.name_checks_failed < MAX_NAME_CHECK_FAILURES and rejected_only and not spelled:
+                logger.info("name check failed: asking for spell-by-word")
+                return error("name_not_confirmed", say=SPELL_BY_WORD)
+    if state.name_checks_failed >= MAX_NAME_CHECK_FAILURES:
+        logger.info(
+            "name not captured after %d checks: offering a callback", MAX_NAME_CHECK_FAILURES
+        )
+        return error(
+            "name_not_captured",
+            say="Apologise that you couldn't get the name right on this line. Don't book. Offer a "
+            "callback: call request_callback with reason not_understood and the caller's phone.",
+        )
+    check = readback.name_check(name, language(context))
+    if gate := read_back_gate(context, Action.CREATE_BOOKING, key, check, "confirm_booking"):
+        return gate
+    state.confirmed_name = name
+    return None
 
 
 async def _patients_with(phone: str, born) -> list:
