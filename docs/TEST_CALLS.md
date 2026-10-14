@@ -60,7 +60,7 @@ Tests the week 2 flows by voice: booking, rescheduling and cancelling, with code
 read-backs. It is also the latency starting point for week 3. **11 calls = 1 warm-up + 7 new + 3
 re-tests, about 25 minutes.** Same setup as above: headphones, quiet room, normal pace.
 
-**Before the session (done by Claude on 2026-10-13; repeat if you test on another day):**
+**Before the session (done by Claude on 2026-10-14; repeat if you test on another day):**
 `uv run python -m db.seed`, then the eval fixtures, so the two test patients have known
 bookings. Re-seed again before any repeat of this session: calls W1–W4 change the data.
 
@@ -68,12 +68,12 @@ bookings. Re-seed again before any repeat of this session: calls W1–W4 change 
 
 | Patient | Phone (say it in two groups) | Date of birth | Upcoming bookings |
 |---|---|---|---|
-| Rohan Joshi | "nine zero zero zero zero, zero zero zero zero two" | "fourth September nineteen seventy-four" | Dr. Sharma, Thursday 15 October, 11 AM |
-| Meera Nair | "nine zero zero zero zero, zero zero zero zero five" | "ninth July nineteen sixty-two" | Dr. Sharma, Thu 15 Oct, 12 PM; Dr. Mehta, Sat 17 Oct, 11 AM |
+| Rohan Joshi | "nine zero zero zero zero, zero zero zero zero two" | "fourth September nineteen seventy-four" | Dr. Sharma, Friday 16 October, 11 AM |
+| Meera Nair | "nine zero zero zero zero, zero zero zero zero five" | "ninth July nineteen sixty-two" | Dr. Sharma, Fri 16 Oct, 12 PM; Dr. Mehta, Sun 18 Oct, 11 AM |
 | Kabir Sethi (new) | "nine eight one one one, two two three three three" | "third March nineteen eighty-eight" | none: created in W1 |
 
 **How a write sounds now:** after you give the details, Simran reads a fixed sentence such as
-*"Just to confirm: Doctor Anil Sharma, on Wednesday, the fourteenth of October, at five in the
+*"Just to confirm: Doctor Anil Sharma, on Thursday, the fifteenth of October, at five in the
 evening, for Kabir Sethi. Shall I book it?"* Code wrote that sentence, not the LLM. Let it finish
 unless the call says otherwise, then answer.
 
@@ -84,11 +84,11 @@ details. Never use your real name or number.
 | # | Tests | What you say (in order, waiting for her reply each time) | Expected |
 |---|---|---|---|
 | 0 | Warm-up (excluded) | "Hello" | Any reply |
-| W1 | **Book, new patient** | 1. "I'd like to book an appointment with Doctor Sharma tomorrow evening." 2. "The earliest one, please." 3. Name, phone, date of birth for **Kabir Sethi** when asked. 4. **Wait for the read-back to finish**, then: "Yes, please book it." | Free evening times offered. Read-back names Doctor Anil Sharma, Wednesday the fourteenth, the time you chose, Kabir Sethi. **No phone or date of birth read aloud.** Then "booked" |
+| W1 | **Book, new patient** | 1. "I'd like to book an appointment with Doctor Sharma tomorrow evening." 2. "The earliest one, please." 3. Name, phone, date of birth for **Kabir Sethi** when asked. 4. **Wait for the read-back to finish**, then: "Yes, please book it." | Free evening times offered. Read-back names Doctor Anil Sharma, Thursday the fifteenth, the time you chose (earliest is 5 PM), Kabir Sethi. **No phone or date of birth read aloud.** Then "booked" |
 | W2 | **Yes over the read-back** | Same as W1 but pick "The second one, please." When she reaches **"Shall I…"**, say **"Yes"** over her. If she reads it again, wait for the end, then "Yes." | Either outcome is fine; note which one happened. **(a)** Your "yes" cut her off: the write is refused and **she reads it back again in full**, then your second yes books it. **(b)** She didn't stop: she finishes and books on that yes, read back once. The finding is how often (a) happens |
 | W3 | **Change of mind at the read-back** | Book again (Doctor Sharma, tomorrow evening, Kabir Sethi details). After the read-back: **"No, wait, make it six PM."** After the new read-back: "Yes." | No booking after "No, wait". A **new** read-back says six in the evening. Booked at 6 PM (or she says 6 is taken and offers others) |
-| W4 | **Reschedule (Rohan)** | 1. "I need to move my appointment." 2. Rohan's phone, then date of birth when asked. 3. "Can I move it to Friday evening?" 4. "Five PM is fine." 5. After the read-back: "Yes, go ahead." | Nothing about the booking is said until you're verified. She finds Thursday 11 AM. The read-back says *from Thursday… eleven in the morning, to Friday… five in the evening*. "Moved" |
-| W5 | **Cancel one of several (Meera)** | 1. "I want to cancel one of my appointments." 2. Meera's phone and date of birth. 3. "The one with Doctor Mehta." 4. After the read-back: "Yes, cancel it." | She asks **which one** (two bookings), not picking herself. The read-back names Doctor Priya Mehta, Saturday the seventeenth, eleven in the morning. "Cancelled". The Sharma booking stays |
+| W4 | **Reschedule (Rohan)** | 1. "I need to move my appointment." 2. Rohan's phone, then date of birth when asked. 3. "Can I move it to Friday evening?" 4. "Five thirty is fine." 5. After the read-back: "Yes, go ahead." | Nothing about the booking is said until you're verified. She finds Friday 11 AM. The read-back says *from Friday… eleven in the morning, to Friday… five thirty in the evening*. "Moved" |
+| W5 | **Cancel one of several (Meera)** | 1. "I want to cancel one of my appointments." 2. Meera's phone and date of birth. 3. "The one with Doctor Mehta." 4. After the read-back: "Yes, cancel it." | She asks **which one** (two bookings), not picking herself. The read-back names Doctor Priya Mehta, Sunday the eighteenth, eleven in the morning. "Cancelled". The Sharma booking stays |
 | W6 | **Wrong date of birth** | 1. "I want to cancel my appointment." 2. **Rohan's** phone, date of birth "first January nineteen seventy". 3. When asked again: "second February nineteen seventy-one." | **Nothing about any booking is said.** After the second failure she says a person must help, and offers a callback (she may ask for a number: give Kabir's) |
 | W7 | **Callback** | "Can someone from the clinic call me back? My number is nine eight two two two, three three four four four." | She says someone will call back, **with no promised time** |
 | 5 | Barge-in re-test | As call 5 above | She stops within about half a second |
