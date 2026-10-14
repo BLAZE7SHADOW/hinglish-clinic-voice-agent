@@ -4,7 +4,9 @@ The LLM calling a write tool is only its claim that the caller agreed. The rule 
 doctor, date and time and wait for a clear yes" is enforced here, from the transcript:
 1. The caller's latest turn came after the read-back was spoken (an earlier yes doesn't count).
 2. The agent's message just before it is the read-back code wrote (agent/readback.py), word for
-   word, and it played to the end. A caller who cut in may not have heard the time.
+   word, and it played to the end. A caller who cut in may not have heard the time. With
+   READBACK_YES_AFTER_FACTS=on, a yes that cut only the closing question counts, because every
+   fact was heard (LEARNING #33).
 3. That turn is a clear yes: at least one yes word and no word that means no, wait or change.
 
 Asymmetric on purpose. A missed yes costs one more "shall I book it?"; a false yes books the
@@ -65,7 +67,22 @@ def user_turns(history: llm.ChatContext) -> int:
     return sum(1 for m in messages(history) if m.role == "user")
 
 
-def check_yes(history: llm.ChatContext, *, after_user_turn: int, read_back: str) -> Confirmation:
+def facts_of(read_back: str) -> str:
+    """The read-back without its closing question: "Just to confirm: Doctor X, …, for Kabir."
+    from "… for Kabir. Shall I book it?". All of it if there is no separate question."""
+    text = read_back.strip()
+    if text.endswith("?") and (cut := text.rfind(". ")) != -1:
+        return text[: cut + 1]
+    return text
+
+
+def check_yes(
+    history: llm.ChatContext,
+    *,
+    after_user_turn: int,
+    read_back: str,
+    yes_after_facts: bool = False,
+) -> Confirmation:
     """Whether the caller's latest turn is a clear yes to `read_back`, spoken after
     `after_user_turn` and heard in full.
     """
@@ -74,14 +91,21 @@ def check_yes(history: llm.ChatContext, *, after_user_turn: int, read_back: str)
     if last_user is None or user_turns(history) <= after_user_turn:
         return Confirmation(False, "the caller hasn't answered the read-back yet")
     before = items[last_user - 1] if last_user > 0 else None
+    heard = _words(before.text_content or "") if before is not None else ""
     # Containment, not equality: TTS-aligned text can differ in spacing and punctuation.
-    if (
-        before is None
-        or before.role != "assistant"
-        or _words(read_back) not in _words(before.text_content or "")
-    ):
+    whole = before is not None and before.role == "assistant" and _words(read_back) in heard
+    # A yes over the closing question ("Shall I…") still covers every fact, if all of them were
+    # heard: LiveKit keeps only the played part of an interrupted message (LEARNING #33).
+    facts_heard = (
+        yes_after_facts
+        and before is not None
+        and before.role == "assistant"
+        and before.interrupted
+        and _words(facts_of(read_back)) in heard
+    )
+    if not whole and not facts_heard:
         return Confirmation(False, "the caller's answer wasn't to the read-back", True)
-    if before.interrupted:
+    if before.interrupted and not facts_heard:
         return Confirmation(False, "the read-back was interrupted", True)
     if not is_clear_yes(items[last_user].text_content or ""):
         return Confirmation(False, "the caller's answer was not a clear yes; ask what they want")

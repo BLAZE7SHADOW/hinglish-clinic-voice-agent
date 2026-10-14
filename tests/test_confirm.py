@@ -102,3 +102,52 @@ def test_tts_spacing_and_punctuation_do_not_matter():
     spoken = ("assistant", READ_BACK_TEXT.replace(",", "").replace(":", " ..."), False)
     h = chat(("user", "Five PM", False), spoken, ("user", "Yes", False))
     assert check(h).ok
+
+
+EVENING_READ_BACK = (
+    "Just to confirm: Doctor Anil Sharma, on Thursday, the fifteenth of October, at seven "
+    "forty-five in the evening, for Kabir. Shall I book it?"
+)
+
+
+def _cut(heard: str):
+    from livekit.agents import llm
+
+    return llm.ChatContext(
+        items=[
+            llm.ChatMessage(role="user", content=["My birth date is ..."]),
+            llm.ChatMessage(role="assistant", content=[heard], interrupted=True),
+            llm.ChatMessage(role="user", content=["Yes."]),
+        ]
+    )
+
+
+def test_a_yes_over_the_closing_question_counts_when_every_fact_was_heard():
+    from agent.confirm import check_yes
+
+    heard = EVENING_READ_BACK.replace(" Shall I book it?", " Shall")
+    assert check_yes(
+        _cut(heard), after_user_turn=1, read_back=EVENING_READ_BACK, yes_after_facts=True
+    ).ok
+    # Off (the default): still a re-read.
+    off = check_yes(_cut(heard), after_user_turn=1, read_back=EVENING_READ_BACK)
+    assert not off.ok and off.read_back_again
+
+
+def test_a_yes_that_cut_a_fact_is_never_enough():
+    """H3: the caller heard "…at seven" but not "forty-five in the evening, for Kabir"."""
+    from agent.confirm import check_yes
+
+    heard = "Just to confirm: Doctor Anil Sharma, on Thursday, the fifteenth of October, at seven"
+    result = check_yes(
+        _cut(heard), after_user_turn=1, read_back=EVENING_READ_BACK, yes_after_facts=True
+    )
+    assert not result.ok and result.read_back_again
+
+
+def test_facts_of_keeps_one_sentence_questions_whole():
+    from agent.confirm import facts_of
+
+    cancel = "Just to confirm: you want to cancel your appointment with Doctor Priya Mehta?"
+    assert facts_of(cancel) == cancel
+    assert facts_of(EVENING_READ_BACK).endswith("for Kabir.")

@@ -114,7 +114,12 @@ def read_back_gate(
         )
     if p.confirmed:
         return None
-    result = check_yes(context.session.history, after_user_turn=p.after_user_turn, read_back=p.text)
+    result = check_yes(
+        context.session.history,
+        after_user_turn=p.after_user_turn,
+        read_back=p.text,
+        yes_after_facts=os.environ.get("READBACK_YES_AFTER_FACTS", "off") == "on",
+    )
     if result.ok:
         p.confirmed = True
         return None

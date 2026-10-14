@@ -1485,3 +1485,28 @@ through the name gate and needs a yes.
 **In industry.** Deterministic dialogue state for exact-entity capture, the LLM for wording.
 Where the LLM can bypass a step, enforce the outcome (no write without confirmation) rather than
 trusting it to follow the steps.
+
+## 33. A yes over "Shall I book it?": count it only if every fact was heard
+
+**What happened.** W2 and H3: callers said yes as the read-back ended. Any interruption forced
+a full re-read; in W2 that meant three read-backs. The safety rule (#22) is "a yes to the exact
+sentence, heard in full", because a caller who cut in may not have heard the time.
+
+**Mechanism.** LiveKit keeps only the played part of an interrupted message in history (H3's
+read-back is stored as "…the fifteenth of October, at seven"). So code can see exactly what the
+caller heard. In H3 the cut was inside the facts ("forty-five in the evening, for Kabir" was
+never heard), so the re-read was right. The cases worth relaxing are cuts inside the closing
+question only.
+
+**Choice (`READBACK_YES_AFTER_FACTS`, off by default).** `confirm.facts_of()` splits the
+read-back into its facts and its closing question. With the flag on, a clear yes counts when the
+read-back was interrupted but every fact is in the heard text. A cut inside any fact still means
+a re-read. One-sentence read-backs (cancel) have no separate question, so nothing changes there.
+
+**Verification.** Tests: yes over "Shall…" counts only with the flag on; H3's real cut (inside
+the time) is refused either way; the cancel read-back stays whole. Voice: count re-reads with the
+flag off and on in the end-of-step session.
+
+**In industry.** Confirmation is about what the caller heard, not what the agent sent. Systems
+with word-level playback timing (TTS-aligned transcripts) use it to decide whether an
+interrupted prompt counts as delivered.
