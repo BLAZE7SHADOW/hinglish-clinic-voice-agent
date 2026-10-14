@@ -13,7 +13,7 @@ third instead of waiting forever. Here:
 LiveKit decides when the caller is "away": both sides silent for `user_away_timeout` seconds,
 paused while a tool runs. Once a caller is away, LiveKit doesn't restart that timer by itself,
 so each reprompt calls `reset_away_timer()` to arm the next one. Any speech from the caller
-resets the count.
+resets the count: words, not VAD, since noise and echo trigger VAD (H1 re-test: 4 reprompts).
 
 A second case looks like silence but isn't: the caller spoke, VAD heard it, and STT returned no
 words (S4 re-test: a "yes" right after the read-back was lost). LiveKit reports it as
@@ -26,7 +26,12 @@ import os
 import re
 from collections.abc import Callable
 
-from livekit.agents import AgentSession, UserStateChangedEvent, UserTranscriptionTimeoutEvent
+from livekit.agents import (
+    AgentSession,
+    UserInputTranscribedEvent,
+    UserStateChangedEvent,
+    UserTranscriptionTimeoutEvent,
+)
 
 from agent.state import CallState
 
@@ -76,10 +81,14 @@ class SilenceHandler:
         self.reprompts = 0  # over the whole call, for the call summary
         self.lost_transcripts = 0  # speech with no words from STT, for the call summary
 
-    def on_user_state(self, ev: UserStateChangedEvent) -> None:
-        if ev.new_state == "speaking":
+    def on_transcript(self, ev: UserInputTranscribedEvent) -> None:
+        # Real words reset the count. VAD "speaking" doesn't: room noise and echo trigger it
+        # between reprompts, and the caller would be reprompted forever (H1 re-test).
+        if ev.is_final and ev.transcript.strip():
             self.silences = 0
-        elif ev.new_state == "away":
+
+    def on_user_state(self, ev: UserStateChangedEvent) -> None:
+        if ev.new_state == "away":
             self.silences += 1
             self._handle()
 
@@ -139,5 +148,6 @@ def attach(
 ) -> SilenceHandler:
     handler = SilenceHandler(session, language=language, end_call=end_call)
     session.on("user_state_changed", handler.on_user_state)
+    session.on("user_input_transcribed", handler.on_transcript)
     session.on("user_transcription_timeout", handler.on_transcription_timeout)
     return handler

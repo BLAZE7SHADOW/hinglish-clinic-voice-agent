@@ -2,7 +2,12 @@
 
 from types import SimpleNamespace
 
-from livekit.agents import UserStateChangedEvent, UserTranscriptionTimeoutEvent, llm
+from livekit.agents import (
+    UserInputTranscribedEvent,
+    UserStateChangedEvent,
+    UserTranscriptionTimeoutEvent,
+    llm,
+)
 
 from agent import silence
 from agent.state import Action, CallState, PendingWrite
@@ -73,14 +78,31 @@ def test_two_reprompts_then_a_goodbye_ends_the_call():
     assert ended == ["end"]
 
 
-def test_caller_speech_resets_the_count():
+def words(text: str) -> UserInputTranscribedEvent:
+    return UserInputTranscribedEvent(transcript=text, is_final=True)
+
+
+def test_caller_words_reset_the_count():
     s = FakeSession()
     h, _ = handler(s)
     h.on_user_state(away())
     h.on_user_state(away())
-    h.on_user_state(speaking())
+    h.on_transcript(words("Sorry, I'm here."))
     h.on_user_state(away())
     assert len(s.replies) == 3 and s.said == []  # a fresh first reprompt, no goodbye
+
+
+def test_noise_without_words_does_not_reset_the_count():
+    """H1: VAD fired on noise between reprompts, and the caller got 4 reprompts, not 2."""
+    s = FakeSession()
+    h, _ = handler(s)
+    h.on_user_state(away())
+    h.on_user_state(speaking())  # VAD only
+    h.on_transcript(words(""))
+    h.on_user_state(away())
+    h.on_user_state(speaking())
+    h.on_user_state(away())
+    assert len(s.replies) == 2 and "Goodbye" in s.said[-1]
 
 
 def test_a_pending_read_back_is_repeated_word_for_word():

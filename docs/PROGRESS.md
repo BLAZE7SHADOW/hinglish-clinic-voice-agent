@@ -221,6 +221,23 @@ row is owed at the next measured run.
 - Keyterm scoping is not in this step.
 - **Next:** voice re-test R1–R3 (`TEST_CALLS.md`, "Week 3 step 1 re-test").
 
+## Week 3 (2026-10-14, afternoon): name confirmation and silence handling
+
+- **Name confirmation** (LEARNING #28): a new patient's name is spelled back on its own before
+  the booking read-back; a correction repeats only the name. A spelling replaces every word that
+  sounds like it. Dev evals 14 of 14. Voice R1 (on file: no name asked), R2/S4 (new patient:
+  corrected in one turn, one booking read-back), R3 (change of mind) all correct.
+- **Silence handling** (#29, `agent/silence.py`, `SILENCE_REPROMPT=on`): reprompt at 8 s, then
+  "no rush", then a goodbye and hang-up; the read-back is repeated whole so a yes still counts.
+  Hanging up deletes the room. Two bugs found by voice and fixed (greeting taken for a goodbye;
+  noise resetting the count).
+- **Lost transcripts** (#30): a "yes" was heard by VAD but never transcribed. Now detected after
+  2 s ("Sorry, I didn't catch that" + read-back) and counted per call. Cause not confirmed
+  (candidate: Deepgram `endpointing_ms` 25).
+- 249 tests pass.
+- **Open from these runs:** a quick yes over the end of a read-back still forces a re-read (H3);
+  13 s from "No, wait, make it seven" to the new read-back (two tool calls) in R3.
+
 ## Next task
 
 1. ~~Create the eval sandbox~~ (done 2026-10-12): Docker container `clinic-eval-db` (Postgres
@@ -232,8 +249,10 @@ row is owed at the next measured run.
    reschedule and cancel, and the backchannel calls 5, 8 and 10.
 4. ~~Voice test~~ (done 2026-10-14, above).
 5. **Week 3, one change at a time (flag → text evals → voice calls → LATENCY_LOG row):**
-   1. Name and number capture (#25): phone first, confirm the name on file, parse spelled
-      letters and numbers from the transcript in code, scope keyterms. Re-test W1–W3.
+   1. ~~Name and number capture (#25, #28)~~ done; still to do: spell-by-word escalation and a
+      stop after two failed name checks, per-field capture metrics, keyterm scoping.
+   1b. ~~Silence handling (#29, #30)~~ done. Next: off-topic handling (prompt tiers + evals,
+      Tele-MANAS 14416 verified against the official site first).
    2. Backchannel resume fix (#26) and an interruption-mode field in telemetry. Re-test call 10.
    3. Phase-aware endpointing (#27).
    4. Read-back re-reads: measure, then decide whether a yes in the last words counts.

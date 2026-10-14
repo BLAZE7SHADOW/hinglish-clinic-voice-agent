@@ -1370,9 +1370,17 @@ so a yes after it still counts. Each reprompt calls `reset_away_timer()`. After 
 goodbye a silence just hangs up. Hanging up deletes the room, as LiveKit's `EndCallTool` does,
 so every participant (phone callers too) is disconnected.
 
-**Verification.** 247 tests. Voice: S1 reprompted at 8 s with the read-back and the "yes" after
-it booked; S2 gave two reprompts (the second rephrased) and the caller came back; S3 said goodbye
-and ended the job. Room deletion is tested in the next voice run.
+**Verification.** Voice: S1 reprompted at 8 s with the read-back and the "yes" after it booked;
+S2 gave two reprompts (the second rephrased) and the caller came back; H2 hung up 8 s after the
+agent's goodbye with no second goodbye; room deletion disconnected the caller (H1–H3).
+
+**Two bugs the voice runs found in this handler.**
+- H1 (first run) hung up at the first silence with no reprompt: the goodbye check matched "thank
+  you for calling", which is how the greeting starts. Now only closing phrases count, and nothing
+  counts before the caller has spoken.
+- H1 (second run) reprompted 4 times instead of 2: the count reset on VAD "speaking", and room
+  noise or echo triggered VAD between reprompts. Now only a final transcript with words resets
+  it. 249 tests, each bug with a regression test from the call.
 
 **In industry.** Every no-input path needs a bounded number of retries and a clean exit. The
 worst failure is silence on both ends, with neither side knowing whose turn it is.
